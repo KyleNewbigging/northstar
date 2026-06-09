@@ -21,9 +21,27 @@ import {
 } from 'lucide-react'
 
 import { actions as seedActions, communities, fallbackProjects, graphEdges, graphNodes, models, patch, queue as seedQueue } from './data/seed'
-import type { InboxAction, ModelId, Project, QueueTask, Status } from './types'
+import type { GraphPayload, InboxAction, ModelId, Project, QueueTask, Status } from './types'
 
 type View = 'dashboard' | 'inbox' | 'queue' | 'graph' | 'review' | 'settings'
+
+type DispatchResponse =
+  | { ok: true; task: { id: string; projectId: string; model: ModelId; status: string }; run: { id: string; status: string; finalText: string; exitCode: number | null; worktreePath?: string } }
+  | { ok: false; blocked?: boolean; error: string; guardrails?: { blockers?: string[] } }
+
+type AgentRun = {
+  id: string
+  status: string
+  model: ModelId
+  finalText?: string | null
+  final_text?: string | null
+  stdout?: string | null
+  stderr?: string | null
+  exitCode?: number | null
+  exit_code?: number | null
+  worktreePath?: string | null
+  worktree_path?: string | null
+}
 
 const modelColor: Record<ModelId, string> = { opus: 'var(--c1)', codex: 'var(--c4)', spark: 'var(--cyan)' }
 const priorityColor = { P0: 'var(--err)', P1: 'var(--star)', P2: 'var(--cyan)', P3: 'var(--ink-3)' }
@@ -36,6 +54,41 @@ const statusDot: Record<Status, string> = {
   idle: 'dot-idle',
 }
 
+const seedGraphPayload: GraphPayload = {
+  source: 'prototype-seed',
+  projectId: 'all',
+  generated: true,
+  nodes: graphNodes,
+  edges: graphEdges,
+  communities,
+}
+
+async function apiJson<T>(path: string): Promise<T | null> {
+  for (const url of [path, `http://127.0.0.1:4317${path}`]) {
+    try {
+      const res = await fetch(url)
+      if (!res.ok) continue
+      return (await res.json()) as T
+    } catch {
+      // Try the next local API shape before falling back to seeded UI data.
+    }
+  }
+  return null
+}
+
+async function apiSend<T>(path: string, init: RequestInit): Promise<T | null> {
+  for (const url of [path, `http://127.0.0.1:4317${path}`]) {
+    try {
+      const res = await fetch(url, init)
+      if (!res.ok) continue
+      return (await res.json()) as T
+    } catch {
+      // Try the next local API shape before falling back to optimistic UI state.
+    }
+  }
+  return null
+}
+
 function pct(value: number) {
   return `${Math.round(value * 100)}%`
 }
@@ -46,6 +99,14 @@ function fmtNum(value: number) {
 
 function projectName(projects: Project[], id: string) {
   return projects.find((project) => project.id === id)?.name ?? id
+}
+
+function runOutput(run: AgentRun) {
+  return run.finalText || run.final_text || run.stdout || run.stderr || ''
+}
+
+function runWorktree(run: AgentRun) {
+  return run.worktreePath || run.worktree_path || run.id
 }
 
 function StatusTag({ status }: { status: Status }) {
@@ -209,11 +270,31 @@ function HUD({ view, projects }: { view: View; projects: Project[] }) {
   )
 }
 
-function CommandBar({ model, setModel }: { model: ModelId; setModel: (model: ModelId) => void }) {
+function CommandBar({
+  model,
+  setModel,
+  projects,
+  projectContext,
+  setProjectContext,
+  setProjectActive,
+  afterDispatch,
+}: {
+  model: ModelId
+  setModel: (model: ModelId) => void
+  projects: Project[]
+  projectContext: string
+  setProjectContext: (context: string) => void
+  setProjectActive: (id: string, active: boolean) => void
+  afterDispatch: () => Promise<void>
+}) {
   const [text, setText] = useState('')
   const [recording, setRecording] = useState(false)
   const [open, setOpen] = useState(false)
+  const [projectOpen, setProjectOpen] = useState(false)
   const [error, setError] = useState('')
+  const [message, setMessage] = useState('')
+  const [messageTone, setMessageTone] = useState<'ok' | 'warn'>('ok')
+  const [dispatching, setDispatching] = useState(false)
   const [voiceEngine, setVoiceEngine] = useState<VoiceEngine>('whisper')
   const [voiceState, setVoiceState] = useState<VoiceState>('idle')
   const mediaRecorderRef = useRef<MediaRecorder | null>(null)
@@ -365,6 +446,62 @@ function CommandBar({ model, setModel }: { model: ModelId; setModel: (model: Mod
     startWebSpeechCapture()
   }
 
+  const dispatchPrompt = async () => {
+    const prompt = text.trim()
+    if (!prompt) {
+      setMessageTone('warn')
+      setMessage('Type or speak a command before dispatch.')
+      return
+    }
+    setError('')
+    setMessageTone('ok')
+    setMessage(`Dispatching ${models.find((item) => item.id === model)?.label ?? model}...`)
+    setDispatching(true)
+    const response = await apiSend<DispatchResponse>('/api/dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ model, prompt, projectContext }),
+    })
+    setDispatching(false)
+
+    if (!response) {
+      setMessageTone('warn')
+      setMessage('Dispatch failed: local API is not reachable.')
+      return
+    }
+    if (!response.ok) {
+      setMessageTone('warn')
+      setMessage(response.guardrails?.blockers?.[0] ?? response.error)
+      return
+    }
+
+    setMessageTone('ok')
+    setText('')
+    setMessage(`${modelLabel(response.task.model)} running in ${response.run.worktreePath ?? 'worktree'}...`)
+    void pollRun(response.run.id, response.task.model)
+  }
+
+  const pollRun = async (runId: string, runModel: ModelId) => {
+    for (let attempt = 0; attempt < 90; attempt += 1) {
+      await new Promise((resolve) => window.setTimeout(resolve, 1500))
+      const data = await apiJson<{ run?: AgentRun | null }>(`/api/runs/${runId}`)
+      const run = data?.run
+      if (!run) continue
+      if (run.status === 'running') {
+        const streamed = run.stdout || run.stderr || ''
+        setMessage(`${modelLabel(runModel)} running${streamed ? `: ${streamed.replace(/\s+/g, ' ').slice(-96)}` : '...'}`)
+        continue
+      }
+      const text = runOutput(run)
+      setMessageTone(run.status === 'done' ? 'ok' : 'warn')
+      setMessage(`${modelLabel(runModel)} ${run.status}: ${text.replace(/\s+/g, ' ').slice(0, 120)}`)
+      await afterDispatch()
+      return
+    }
+    setMessageTone('warn')
+    setMessage(`${modelLabel(runModel)} is still running. Check Agent Queue or /api/runs/${runId}.`)
+  }
+
   const commandHint = voiceState === 'listening-webspeech'
     ? `Web Speech mode: ${model.toUpperCase()}`
     : voiceState === 'listening-whisper'
@@ -388,7 +525,64 @@ function CommandBar({ model, setModel }: { model: ModelId; setModel: (model: Mod
           <Mic size={17} />
           {voiceState !== 'idle' ? <span className="mic-rings"><i></i><i></i><i></i></span> : null}
         </button>
-        <button type="button" className="cmd-ctx" aria-label="Project context selector"><i className="dot dot-run" /><span className="mono">all-projects</span><ChevronDown size={12} /></button>
+        <div className="cmd-context">
+          <button
+            type="button"
+            className="cmd-ctx"
+            aria-label="Project context selector"
+            aria-expanded={projectOpen}
+            aria-haspopup="menu"
+            onClick={() => setProjectOpen((value) => !value)}
+          >
+            <i className={`dot ${projects.some((project) => project.active) ? 'dot-run live' : 'dot-idle'}`} />
+            <span className="mono">{projectContext === 'active' ? 'active-projects' : projectName(projects, projectContext)}</span>
+            <ChevronDown size={12} />
+          </button>
+          {projectOpen ? (
+            <div className="project-menu fade-in" role="menu">
+              <div className="eyebrow project-menu-hd">ACTIVE CONTEXT</div>
+              <button
+                type="button"
+                className={`project-menu-all${projectContext === 'active' ? ' on' : ''}`}
+                onClick={() => {
+                  setProjectContext('active')
+                  setProjectOpen(false)
+                }}
+              >
+                <i className="dot dot-run" />
+                <span className="mono grow">All active projects</span>
+                <span className="chip-n">{projects.filter((project) => project.active).length}</span>
+              </button>
+              <div className="eyebrow project-menu-hd">PROJECT AUTONOMY</div>
+              <div className="project-menu-list">
+                {projects.map((project) => (
+                  <div key={project.id} className={`project-opt${projectContext === project.id ? ' on' : ''}`}>
+                    <button
+                      type="button"
+                      className="project-pick"
+                      disabled={!project.active}
+                      onClick={() => {
+                        setProjectContext(project.id)
+                        setProjectOpen(false)
+                      }}
+                    >
+                      <i className={`dot ${project.active ? 'dot-run live' : 'dot-idle'}`} />
+                      <span className="mono grow">{project.name}</span>
+                      <span className="project-state">{project.active ? 'active' : 'disabled'}</span>
+                    </button>
+                    <button
+                      type="button"
+                      className={`project-toggle${project.active ? ' on' : ''}`}
+                      onClick={() => setProjectActive(project.id, !project.active)}
+                    >
+                      {project.active ? 'Disable' : 'Activate'}
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
         <input
           className="cmd-input"
           value={text}
@@ -405,32 +599,41 @@ function CommandBar({ model, setModel }: { model: ModelId; setModel: (model: Mod
           <button type="button" className="model-btn" aria-expanded={open} aria-haspopup="menu" onClick={() => setOpen((o) => !o)}><i className="dot" style={{ background: modelColor[model] }} /><span className="mono">{models.find((m) => m.id === model)?.label}</span><ChevronDown size={12} /></button>
           {open ? <div className="model-menu fade-in" role="menu">{models.map((m) => <button type="button" role="menuitemradio" aria-checked={m.id === model} key={m.id} className={`model-opt${m.id === model ? ' on' : ''}`} onClick={() => { setModel(m.id); setOpen(false) }}><i className="dot" style={{ background: modelColor[m.id] }} /><div className="col grow" style={{ alignItems: 'flex-start' }}><span className="mono">{m.label}</span><span style={{ fontSize: 10, color: 'var(--ink-3)' }}>{m.vendor} · {m.tier}</span></div>{m.id === model ? <Check size={14} /> : null}</button>)}</div> : null}
         </div>
-        <button type="button" className="btn btn-primary" onClick={() => setText('')}><ArrowRight size={15} /> Dispatch</button>
+        <button type="button" className="btn btn-primary" disabled={dispatching} onClick={dispatchPrompt}><ArrowRight size={15} /> {dispatching ? 'Running' : 'Dispatch'}</button>
       </div>
       <div className="cmd-hint">
         <span><span className="kbd">CMD K</span> command palette</span>
-        <span style={{ color: error ? 'var(--err)' : 'var(--ink-4)' }}>{error || commandHint}</span>
+        <span style={{ color: error ? 'var(--err)' : message ? (messageTone === 'ok' ? 'var(--ok)' : 'var(--star)') : 'var(--ink-4)' }}>{error || message || commandHint}</span>
         <span><span className="kbd">@</span> files · <span className="kbd">#</span> tasks</span>
       </div>
     </div>
   )
 }
 
-function Dashboard({ projects, openInbox }: { projects: Project[]; openInbox: (id: string) => void }) {
-  const active = projects.filter((p) => p.status === 'needs-input' || p.status === 'running').length
+function modelLabel(model: ModelId) {
+  if (model === 'opus') return 'Claude'
+  if (model === 'spark') return 'Spark'
+  return 'GPT-5.5'
+}
+
+function Dashboard({ projects, openInbox, setProjectActive }: { projects: Project[]; openInbox: (id: string) => void; setProjectActive: (id: string, active: boolean) => void }) {
+  const active = projects.filter((p) => p.active || p.status === 'needs-input' || p.status === 'running').length
   const changed = projects.reduce((sum, p) => sum + p.openTasks, 0)
+  const local = projects.filter((p) => p.localExists !== false).length
+  const github = projects.filter((p) => p.github).length
+  const graphReady = projects.filter((p) => p.graphReady).length
   return (
     <div className="screen">
       <div className="dash-stats">
-        <Stat label="PROJECTS TRACKED" value={projects.length} sub="local git repos under ~/dev" icon={<Boxes size={14} />} />
+        <Stat label="PROJECTS TRACKED" value={projects.length} sub={`${local} local · ${github} GitHub linked`} icon={<Boxes size={14} />} />
         <Stat label="NEEDS YOU" value={active} sub="dirty, behind, or missing graphify" accent="var(--cyan)" icon={<AlertTriangle size={14} />} />
-        <Stat label="OPEN LOOPS" value={changed} sub="derived from git status + graph state" icon={<Layers size={14} />} />
-        <Stat label="MODEL ROUTER" value="Spark" sub="background default; 5.5 reserved" accent="var(--star)" icon={<Zap size={14} />} />
+        <Stat label="OPEN LOOPS" value={changed} sub="git, GitHub, and graph state" icon={<Layers size={14} />} />
+        <Stat label="GRAPH READY" value={graphReady} sub="real graphify snapshots found" accent="var(--star)" icon={<Network size={14} />} />
       </div>
       <div className="dash-body">
         <div className="dash-main scroll">
-          <div className="row gap10" style={{ marginBottom: 10 }}><span className="eyebrow">PROJECTS</span><span className="tnum" style={{ fontSize: 11, color: 'var(--ink-4)' }}>{projects.length} tracked · ~/dev</span><span className="grow" /></div>
-          <div className="dash-cards">{projects.map((p) => <ProjectCard key={p.id} project={p} onClick={() => openInbox(p.id)} />)}</div>
+          <div className="row gap10" style={{ marginBottom: 10 }}><span className="eyebrow">PROJECTS</span><span className="tnum" style={{ fontSize: 11, color: 'var(--ink-4)' }}>{projects.length} tracked · local + GitHub</span><span className="grow" /></div>
+          <div className="dash-cards">{projects.map((p) => <ProjectCard key={p.id} project={p} onClick={() => openInbox(p.id)} setProjectActive={setProjectActive} />)}</div>
         </div>
         <div className="dash-side"><Telemetry projects={projects} /></div>
       </div>
@@ -442,15 +645,35 @@ function Stat({ label, value, sub, icon, accent }: { label: string; value: strin
   return <div className="panel brackets stat-tile"><div className="row gap8" style={{ justifyContent: 'space-between' }}><span className="eyebrow">{label}</span><span style={{ color: accent ?? 'var(--ink-3)' }}>{icon}</span></div><span className="tnum" style={{ display: 'block', marginTop: 8, fontSize: 30, lineHeight: 1, color: accent ?? 'var(--ink)' }}>{value}</span><div style={{ fontSize: 11, color: 'var(--ink-3)', marginTop: 6 }}>{sub}</div></div>
 }
 
-function ProjectCard({ project, onClick }: { project: Project; onClick: () => void }) {
+function ProjectCard({ project, onClick, setProjectActive }: { project: Project; onClick: () => void; setProjectActive: (id: string, active: boolean) => void }) {
+  const sourceLabel = project.localExists === false ? 'github-only' : project.github ? 'local + github' : 'local'
+  const visibility = project.github?.visibility && project.github.visibility !== 'unknown' ? project.github.visibility : null
   return (
-    <button className="panel brackets proj-card" onClick={onClick}>
+    <div
+      className={`panel brackets proj-card${project.active ? ' active' : ''}`}
+      role="button"
+      tabIndex={0}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') onClick()
+      }}
+    >
       <div className="row gap10" style={{ justifyContent: 'space-between' }}><div className="row gap8 grow"><Ring value={project.health} /><div className="col grow" style={{ minWidth: 0 }}><span className="mono proj-name">{project.name}</span><span className="row gap6" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}><GitBranch size={11} />{project.branch}<span className={`lbl lbl-${project.label}`}>{project.label}</span></span></div></div><StatusTag status={project.status} /></div>
-      <div className="proj-meta"><div className="pm"><span className="eyebrow">LANG</span><span className="mono">{project.lang}</span></div><div className="pm"><span className="eyebrow">NODES</span><span className="tnum">{fmtNum(project.nodes)}</span></div><div className="pm"><span className="eyebrow">HEALTH</span><span className="tnum">{pct(project.health)}</span></div><div className="pm"><span className="eyebrow">RUNTIME</span><span className="tnum">{project.runtime}</span></div></div>
+      <div className="proj-source">
+        <span className="tag mono"><i className={`dot ${project.localExists === false ? 'dot-queue' : 'dot-run'}`} />{sourceLabel}</span>
+        {project.github ? <span className="proj-gh mono">{project.github.fullName}</span> : <span className="proj-gh mono">no GitHub remote</span>}
+        <span className={`tag mono skill-tag${project.skillsReady ? ' on' : ''}`} title={project.skillsPath ?? 'Project skills file'}>
+          <Sparkles size={11} />
+          {project.skillsReady ? `${project.learnedItems ?? 0} learned` : 'skills blank'}
+        </span>
+        {visibility ? <span className="chip tiny">{visibility}</span> : null}
+      </div>
+      <div className="proj-meta"><div className="pm"><span className="eyebrow">LANG</span><span className="mono">{project.lang}</span></div><div className="pm"><span className="eyebrow">NODES</span><span className="tnum">{fmtNum(project.nodes)}</span></div><div className="pm"><span className="eyebrow">GRAPH</span><span className="tnum">{project.graphReady ? 'ready' : 'missing'}</span></div><div className="pm"><span className="eyebrow">RUNTIME</span><span className="tnum">{project.runtime}</span></div></div>
       <div className="row gap8" style={{ margin: '2px 0 4px' }}><Sparkline data={project.spark} width={120} color={project.status === 'blocked' ? 'var(--err)' : 'var(--star)'} /><span className="grow" /><div className="col" style={{ alignItems: 'flex-end' }}><span className="tnum" style={{ fontSize: 11 }}>{project.linesNet}</span><span className="eyebrow" style={{ fontSize: 9 }}>WORKTREE</span></div></div>
-      <div className="proj-foot"><div className="row gap8"><span className="tag"><i className={`dot ${project.agentsActive ? 'dot-run live' : 'dot-idle'}`} />{project.agentsActive ? `${project.agentsActive} AGENT` : 'IDLE'}</span><span style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{project.openTasks} open · {project.queued} queued</span></div><span className="proj-event mono">{project.lastEvent}<span style={{ color: 'var(--ink-4)' }}> · {project.lastAgo}</span></span></div>
+      <div className="proj-foot"><div className="row gap8"><span className="tag"><i className={`dot ${project.agentsActive ? 'dot-run live' : 'dot-idle'}`} />{project.agentsActive ? `${project.agentsActive} AGENT` : 'IDLE'}</span><span style={{ fontSize: 10.5, color: 'var(--ink-3)' }}>{project.openTasks} open · {project.queued} queued</span></div><button type="button" className={`btn btn-sm project-active-btn${project.active ? ' on' : ''}`} onClick={(event) => { event.stopPropagation(); setProjectActive(project.id, !project.active) }}>{project.active ? 'Disable' : 'Activate'}</button></div>
+      <span className="proj-event mono">{project.lastEvent}<span style={{ color: 'var(--ink-4)' }}> · {project.lastAgo}</span></span>
       <div className="meter" style={{ marginTop: 2 }}><i style={{ width: pct(Math.min(1, project.tokens / project.budget)) }} /></div>
-    </button>
+    </div>
   )
 }
 
@@ -462,19 +685,134 @@ function Inbox({ projects, projectFilter, actions, setActions, openReview }: { p
   const filtered = actions.filter((a) => !projectFilter || a.project === projectFilter).sort((a, b) => a.priority.localeCompare(b.priority))
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const selected = filtered.find((a) => a.id === selectedId) ?? filtered[0]
-  const resolve = (item: InboxAction, choice: string) => setActions(actions.filter((a) => a.id !== item.id))
-  return <div className="screen inbox-screen"><div className="ib-banner"><Zap size={15} style={{ color: 'var(--star)' }} /><span className="mono"><b>{projects.filter((p) => p.status === 'needs-input').length} projects</b> need attention</span><span className="grow" /><span className="chip on">{projectFilter ? projectName(projects, projectFilter) : 'All'}</span></div><div className="inbox-grid"><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="ib-typebar"><button className="ib-tab on">All <span className="chip-n">{filtered.length}</span></button><button className="ib-tab">Questions</button><button className="ib-tab">Reviews</button><button className="ib-tab">Suggestions</button></div><div className="scroll grow">{filtered.map((a, i) => <button key={a.id} className={`ib-row${selected?.id === a.id ? ' active' : ''}`} onClick={() => setSelectedId(a.id)}><span className="ib-prio" style={{ background: priorityColor[a.priority] }} /><span className="ib-ticon"><AlertTriangle size={15} /></span><div className="col grow"><div className="row gap8">{i === 0 ? <span className="ib-next">NEXT</span> : null}<span className="ib-title grow">{a.title}</span></div><div className="row gap8"><span className="mono ib-proj">{projectName(projects, a.project)}</span><span className="mono" style={{ fontSize: 10, color: 'var(--ink-4)' }}>{a.type}</span><span className="grow" /><span className="mono" style={{ fontSize: 10, color: 'var(--ink-4)' }}>{a.ago}</span></div></div></button>)}</div></div><div className="panel brackets" style={{ overflow: 'auto' }}>{selected ? <div className="ib-detail"><div className="ib-detail-hd"><span className="tag">{selected.type.toUpperCase()}</span><span className="tag mono">{selected.priority}</span><span className="mono ib-proj">{projectName(projects, selected.project)}</span></div><h2 className="ib-detail-title">{selected.title}</h2><p className="ib-ctx">{selected.ctx}</p>{selected.type === 'review' ? <div className="row gap8"><button className="btn btn-primary" onClick={openReview}>Open full review</button><button className="btn" onClick={() => resolve(selected, 'approved')}>Approve locally</button></div> : <div className="ib-opts">{(selected.options ?? ['Acknowledge']).map((o, i) => <button key={o} className={`ib-opt${selected.recommend === i ? ' rec' : ''}`} onClick={() => resolve(selected, o)}><span className="ib-optdot" /><span className="grow" style={{ textAlign: 'left' }}>{o}</span>{selected.recommend === i ? <span className="ib-rec">recommended</span> : null}</button>)}</div>}{selected.help ? <div className="ib-help"><ModelChip id={selected.model} small /><p>{selected.help}</p></div> : null}</div> : <div className="ib-empty">Inbox zero.</div>}</div></div></div>
+  const resolve = (item: InboxAction, choice: string) => {
+    setActions(actions.filter((a) => a.id !== item.id))
+    void apiSend(`/api/inbox/${item.id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ choice }),
+    })
+  }
+  return <div className="screen inbox-screen"><div className="ib-banner"><Zap size={15} style={{ color: 'var(--star)' }} /><span className="mono"><b>{projects.filter((p) => p.active).length} active projects</b> making slow progress</span><span className="mono" style={{ color: 'var(--ink-3)' }}>· {filtered.length} clarifications queued</span><span className="grow" /><span className="chip on">{projectFilter ? projectName(projects, projectFilter) : 'All'}</span></div><div className="inbox-grid"><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="ib-typebar"><button className="ib-tab on">All <span className="chip-n">{filtered.length}</span></button><button className="ib-tab">Questions</button><button className="ib-tab">Reviews</button><button className="ib-tab">Suggestions</button></div><div className="scroll grow">{filtered.map((a, i) => <button key={a.id} className={`ib-row${selected?.id === a.id ? ' active' : ''}`} onClick={() => setSelectedId(a.id)}><span className="ib-prio" style={{ background: priorityColor[a.priority] }} /><span className="ib-ticon"><AlertTriangle size={15} /></span><div className="col grow"><div className="row gap8">{i === 0 ? <span className="ib-next">NEXT</span> : null}<span className="ib-title grow">{a.title}</span></div><div className="row gap8"><span className="mono ib-proj">{projectName(projects, a.project)}</span><span className="mono" style={{ fontSize: 10, color: 'var(--ink-4)' }}>{a.type}</span><span className="grow" /><span className="mono" style={{ fontSize: 10, color: 'var(--ink-4)' }}>{a.ago}</span></div></div></button>)}</div></div><div className="panel brackets" style={{ overflow: 'auto' }}>{selected ? <div className="ib-detail"><div className="ib-detail-hd"><span className="tag">{selected.type.toUpperCase()}</span><span className="tag mono">{selected.priority}</span><span className="mono ib-proj">{projectName(projects, selected.project)}</span></div><h2 className="ib-detail-title">{selected.title}</h2><p className="ib-ctx">{selected.ctx}</p>{selected.type === 'review' ? <div className="row gap8"><button className="btn btn-primary" onClick={openReview}>Open full review</button><button className="btn" onClick={() => resolve(selected, 'approved')}>Approve locally</button></div> : <div className="ib-opts">{(selected.options ?? ['Acknowledge']).map((o, i) => <button key={o} className={`ib-opt${selected.recommend === i ? ' rec' : ''}`} onClick={() => resolve(selected, o)}><span className="ib-optdot" /><span className="grow" style={{ textAlign: 'left' }}>{o}</span>{selected.recommend === i ? <span className="ib-rec">recommended</span> : null}</button>)}</div>}{selected.help ? <div className="ib-help"><ModelChip id={selected.model} small /><p>{selected.help}</p></div> : null}</div> : <div className="ib-empty">Inbox zero.</div>}</div></div></div>
 }
 
 function Queue({ projects, openReview }: { projects: Project[]; openReview: () => void }) {
   const [paused, setPaused] = useState<Record<string, boolean>>({})
-  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">Answer merge strategy and queue graphify snapshots</span><span style={{ color: 'var(--ink-3)' }}>Northstar · local dashboard can now see your repos</span></div><button className="btn btn-primary">Resolve</button></div></div><div className="row gap6 q-filters"><span className="chip on">All <span className="chip-n">{seedQueue.length}</span></span><span className="chip">Running</span><span className="chip">Queued</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>2 background slots · strict no-API</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{seedQueue.map((q) => <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" onClick={() => setPaused({ ...paused, [q.id]: !paused[q.id] })}>{paused[q.id] ? <Play size={12} /> : <Pause size={12} />}</button></div></div>)}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><AlertTriangle size={14} style={{ color: 'var(--cyan)' }} /><h3>Local Projects</h3><span className="grow" /><span className="tag">{projects.length} repos</span></div><div className="scroll grow" style={{ padding: 12 }}>{projects.map((p) => <div key={p.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${p.status === 'needs-input' ? 'high' : 'low'}`} /><span className="mono">{p.name}</span><span className="grow" /><span className={`lbl lbl-${p.label}`}>{p.label}</span></div><p className="inbox-q">{p.lastEvent}</p><p className="inbox-ctx">{p.path} · {p.branch}</p></div>)}</div></div></div></div>
+  const [runs, setRuns] = useState<AgentRun[]>([])
+
+  useEffect(() => {
+    let alive = true
+    const loadRuns = async () => {
+      const data = await apiJson<{ runs?: AgentRun[] }>('/api/runs')
+      if (alive && data?.runs) setRuns(data.runs)
+    }
+    void loadRuns()
+    const id = window.setInterval(loadRuns, 2500)
+    return () => {
+      alive = false
+      window.clearInterval(id)
+    }
+  }, [])
+
+  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">Prove Spark runner, then keep GPT-5.5 reserved</span><span style={{ color: 'var(--ink-3)' }}>Northstar · CLI subscription orchestration now owns dispatch</span></div><button className="btn btn-primary">Resolve</button></div></div><div className="row gap6 q-filters"><span className="chip on">Seeded <span className="chip-n">{seedQueue.length}</span></span><span className="chip">Live <span className="chip-n">{runs.length}</span></span><span className="chip">Running</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>worktrees · strict no-API</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{seedQueue.map((q) => <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" onClick={() => setPaused({ ...paused, [q.id]: !paused[q.id] })}>{paused[q.id] ? <Play size={12} /> : <Pause size={12} />}</button></div></div>)}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Zap size={14} style={{ color: 'var(--star)' }} /><h3>Live CLI Runs</h3><span className="grow" /><span className="tag">{runs.filter((run) => run.status === 'running').length} running</span></div><div className="scroll grow" style={{ padding: 12 }}>{runs.length ? runs.map((run) => <div key={run.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${run.status === 'blocked' ? 'high' : run.status === 'running' ? 'med' : 'low'}`} /><span className="mono">{modelLabel(run.model)}</span><span className="grow" /><span className="tag mono">{run.status}</span></div><p className="inbox-q">{(runOutput(run) || 'Waiting for CLI output...').replace(/\s+/g, ' ').slice(0, 180)}</p><p className="inbox-ctx">{runWorktree(run)}</p></div>) : <div className="inbox-empty">No live CLI runs yet.</div>}</div></div></div></div>
 }
 
-function Graph({ openReview }: { openReview: () => void }) {
-  const [selected, setSelected] = useState('ProjectIngest')
-  const selectedNode = graphNodes.find((n) => n.id === selected)
-  return <div className="screen graph-screen" style={{ padding: 0 }}><div className="graph-wrap"><div className="graph-toolbar"><div className="g-search"><Search size={14} /><input placeholder='query nodes - "project", "agent"...' /></div><button className="chip on"><Zap size={12} /> agent activity</button><span className="grow" /><div className="g-stats"><span><b>{graphNodes.length}</b> nodes</span><span><b>{graphEdges.length}</b> edges</span><span><b>{communities.length}</b> communities</span></div></div><svg className="graph-svg" viewBox="0 0 1000 680">{graphEdges.map(([a, b, conf]) => { const na = graphNodes.find((n) => n.id === a)!; const nb = graphNodes.find((n) => n.id === b)!; return <line key={`${a}-${b}`} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y} stroke={selected === a || selected === b ? 'var(--star)' : 'var(--ink-3)'} strokeDasharray={conf === 'ext' ? 'none' : conf === 'inf' ? '4 4' : '1.5 5'} opacity={selected === a || selected === b ? .8 : .25} /> })}{graphNodes.map((n) => <g key={n.id} transform={`translate(${n.x} ${n.y})`} onClick={() => setSelected(n.id)} className="g-node"><circle r={n.kind === 'god' ? 18 : 11} fill={communities[n.c]?.color ?? 'var(--star)'} stroke="var(--bg)" strokeWidth="2" />{n.agent ? <circle r="7" fill="var(--star)" /> : null}<text y="32" textAnchor="middle" className="g-label" style={{ fill: selected === n.id ? 'var(--star)' : 'var(--ink-2)' }}>{n.id}</text></g>)}</svg><div className="graph-legend"><span className="eyebrow">COMMUNITIES</span>{communities.map((c) => <div key={c.id} className="legend-row"><span className="g-swatch sm" style={{ background: c.color }} /><span className="mono grow">{c.name}</span></div>)}</div>{selectedNode ? <div className="g-inspector"><div className="row gap8"><span className="eyebrow">NODE INSPECTOR</span><span className="grow" /><button className="btn btn-ghost btn-sm" onClick={() => setSelected('')}><X size={13} /></button></div><div className="row gap8" style={{ marginTop: 10 }}><span className="g-swatch" style={{ background: communities[selectedNode.c]?.color }} /><span className="mono" style={{ fontSize: 15 }}>{selectedNode.id}</span></div><div className="g-agentbox"><span className="eyebrow" style={{ color: 'var(--star)' }}>AGENT ACTIVE</span><p>Northstar is mapping this area into graphify-ready project context.</p><button className="btn btn-primary btn-sm" onClick={openReview}>Review patch</button></div></div> : null}</div></div>
+function Graph({ projects, openReview }: { projects: Project[]; openReview: () => void }) {
+  const [projectId, setProjectId] = useState('all')
+  const [query, setQuery] = useState('')
+  const [selected, setSelected] = useState('')
+  const [graph, setGraph] = useState<GraphPayload>(seedGraphPayload)
+  const [status, setStatus] = useState<'loading' | 'ready' | 'fallback'>('loading')
+
+  useEffect(() => {
+    let alive = true
+    const loadGraph = async () => {
+      setStatus('loading')
+      const data = await apiJson<GraphPayload>(`/api/graph/${projectId}`)
+      if (!alive) return
+      if (data?.nodes?.length) {
+        setGraph(data)
+        setSelected(data.nodes[0]?.id ?? '')
+        setStatus('ready')
+      } else {
+        setGraph(seedGraphPayload)
+        setSelected(seedGraphPayload.nodes[0]?.id ?? '')
+        setStatus('fallback')
+      }
+    }
+
+    void loadGraph()
+    return () => {
+      alive = false
+    }
+  }, [projectId])
+
+  const nodeById = useMemo(() => new Map(graph.nodes.map((node) => [node.id, node])), [graph.nodes])
+  const selectedNode = selected ? nodeById.get(selected) : graph.nodes[0]
+  const matches = query.trim()
+    ? graph.nodes.filter((node) => `${node.label ?? node.id} ${node.meta ? Object.values(node.meta).join(' ') : ''}`.toLowerCase().includes(query.toLowerCase())).slice(0, 6)
+    : []
+  const options = [{ id: 'all', name: 'All projects', localExists: true } as Pick<Project, 'id' | 'name' | 'localExists'>, ...projects]
+
+  return (
+    <div className="screen graph-screen" style={{ padding: 0 }}>
+      <div className="graph-wrap">
+        <div className="graph-toolbar">
+          <div className="g-search">
+            <Search size={14} />
+            <input value={query} onChange={(event) => setQuery(event.target.value)} placeholder='query nodes - "github", "graph"...' />
+            {matches.length ? (
+              <div className="g-results">
+                {matches.map((node) => (
+                  <button key={node.id} type="button" className="g-result" onClick={() => { setSelected(node.id); setQuery('') }}>
+                    <span className="g-swatch sm" style={{ background: graph.communities[node.c]?.color ?? 'var(--star)' }} />
+                    <span className="mono">{node.label ?? node.id}</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <button className="chip on"><Zap size={12} /> {status === 'loading' ? 'loading graph' : graph.generated ? 'generated graph' : 'graphify graph'}</button>
+          <span className="grow" />
+          <div className="g-stats"><span><b>{graph.nodes.length}</b> nodes</span><span><b>{graph.edges.length}</b> edges</span><span><b>{graph.communities.length}</b> communities</span></div>
+        </div>
+        <div className="graph-project-strip">
+          {options.map((project) => (
+            <button key={project.id} type="button" className={`graph-project-chip${projectId === project.id ? ' on' : ''}`} onClick={() => setProjectId(project.id)}>
+              <i className={`dot ${project.localExists === false ? 'dot-queue' : 'dot-run'}`} />
+              <span className="mono">{project.name}</span>
+            </button>
+          ))}
+        </div>
+        <svg className="graph-svg" viewBox="0 0 1000 680">
+          {graph.edges.map(([a, b, conf]) => {
+            const na = nodeById.get(a)
+            const nb = nodeById.get(b)
+            if (!na || !nb) return null
+            return <line key={`${a}-${b}`} x1={na.x} y1={na.y} x2={nb.x} y2={nb.y} stroke={selected === a || selected === b ? 'var(--star)' : 'var(--ink-3)'} strokeDasharray={conf === 'ext' ? 'none' : conf === 'inf' ? '4 4' : '1.5 5'} opacity={selected === a || selected === b ? .8 : .25} />
+          })}
+          {graph.nodes.map((node) => (
+            <g key={node.id} transform={`translate(${node.x} ${node.y})`} onClick={() => setSelected(node.id)} className="g-node">
+              {node.hot ? <circle r={node.kind === 'god' ? 28 : 20} fill="none" stroke="var(--star)" className="g-agent hot" /> : null}
+              <circle r={node.kind === 'god' ? 18 : 11} fill={graph.communities[node.c]?.color ?? 'var(--star)'} stroke="var(--bg)" strokeWidth="2" />
+              {node.agent ? <circle r="7" fill="var(--star)" /> : null}
+              <text y="32" textAnchor="middle" className="g-label" style={{ fill: selected === node.id ? 'var(--star)' : 'var(--ink-2)' }}>{node.label ?? node.id}</text>
+            </g>
+          ))}
+        </svg>
+        <div className="graph-legend"><span className="eyebrow">COMMUNITIES</span>{graph.communities.map((community) => <div key={community.id} className="legend-row"><span className="g-swatch sm" style={{ background: community.color }} /><span className="mono grow">{community.name}</span></div>)}<div className="legend-conf"><span><i className="cline" /> explicit</span><span><i className="cline inf" /> inferred</span><span><i className="cline amb" /> needs context</span></div></div>
+        {selectedNode ? (
+          <div className="g-inspector">
+            <div className="row gap8"><span className="eyebrow">NODE INSPECTOR</span><span className="grow" /><button className="btn btn-ghost btn-sm" onClick={() => setSelected('')}><X size={13} /></button></div>
+            <div className="row gap8" style={{ marginTop: 10 }}><span className="g-swatch" style={{ background: graph.communities[selectedNode.c]?.color }} /><span className="mono" style={{ fontSize: 15 }}>{selectedNode.label ?? selectedNode.id}</span></div>
+            <div className="g-path">{graph.source}{graph.missing ? ' · graphify missing' : ''}</div>
+            <div className="g-agentbox"><span className="eyebrow" style={{ color: 'var(--star)' }}>{selectedNode.agent ? 'AGENT ACTIVE' : 'CONTEXT NODE'}</span><p>{selectedNode.project ? 'This node is tied to one project and can become an agent worktree target.' : 'This node groups project context for dashboard routing.'}</p><button className="btn btn-primary btn-sm" onClick={openReview}>Review patch</button></div>
+            {selectedNode.meta ? <div className="g-meta">{Object.entries(selectedNode.meta).map(([key, value]) => <div key={key} className="g-nb"><span className="mono">{key}</span><span className="grow" /><span>{String(value)}</span></div>)}</div> : null}
+          </div>
+        ) : null}
+      </div>
+    </div>
+  )
 }
 
 function Review({ back }: { back: () => void }) {
@@ -482,44 +820,78 @@ function Review({ back }: { back: () => void }) {
 }
 
 function SettingsView() {
-  return <div className="screen"><div className="screen-grid" style={{ gridTemplateColumns: '1fr 1fr' }}><div className="panel brackets col"><div className="panel-hd"><Settings size={14} /><h3>Guardrails</h3></div><div style={{ padding: 16 }} className="col gap10"><p>Strict no-API mode blocks dispatch when API key env vars are present.</p><p>Codex uses ChatGPT login. Claude uses claude.ai login. Spark means Codex Spark, not an Ollama endpoint.</p><p>Runtime data lives in ~/.northstar. Worktrees stay isolated and no push happens in v1.</p></div></div><div className="panel brackets col"><div className="panel-hd"><Zap size={14} /><h3>Next Routing</h3></div><div style={{ padding: 16 }} className="col gap10">{models.map((m) => <div key={m.id} className="panel" style={{ padding: 12 }}><ModelChip id={m.id} /><p style={{ marginTop: 8, color: 'var(--ink-3)' }}>{m.tier} · {m.auth}</p></div>)}</div></div></div></div>
+  return <div className="screen"><div className="screen-grid" style={{ gridTemplateColumns: '1fr 1fr' }}><div className="panel brackets col"><div className="panel-hd"><Settings size={14} /><h3>Guardrails</h3></div><div style={{ padding: 16 }} className="col gap10"><p>Strict no-API mode blocks dispatch when API key env vars are present.</p><p>Codex uses ChatGPT login. Claude uses claude.ai login. Spark means Codex Spark, not an Ollama endpoint.</p><p>Runtime data lives in ~/.northstar. Each project has a private skills file under ~/.northstar/skills, and learned notes are fed back into plan-mode dispatch.</p><p>Worktrees stay isolated and no push happens in v1.</p></div></div><div className="panel brackets col"><div className="panel-hd"><Zap size={14} /><h3>Next Routing</h3></div><div style={{ padding: 16 }} className="col gap10">{models.map((m) => <div key={m.id} className="panel" style={{ padding: 12 }}><ModelChip id={m.id} /><p style={{ marginTop: 8, color: 'var(--ink-3)' }}>{m.tier} · {m.auth}</p></div>)}</div></div></div></div>
 }
 
 export function App() {
   const [view, setView] = useState<View>('dashboard')
   const [projects, setProjects] = useState<Project[]>(fallbackProjects)
   const [projectFilter, setProjectFilter] = useState<string | null>(null)
+  const [projectContext, setProjectContext] = useState('active')
   const [actions, setActions] = useState(seedActions)
   const [model, setModel] = useState<ModelId>('opus')
 
-  useEffect(() => {
-    const loadProjects = async () => {
-      for (const url of ['/api/projects', 'http://127.0.0.1:4317/api/projects']) {
-        try {
-          const res = await fetch(url)
-          if (!res.ok) continue
-          const data = (await res.json()) as { projects?: Project[] }
-          if (data.projects?.length) {
-            setProjects(data.projects)
-            return
-          }
-        } catch {
-          // Keep seed fallback when the local API is not running.
-        }
-      }
+  const loadProjects = async () => {
+    const data = await apiJson<{ projects?: Project[] }>('/api/projects')
+    if (data?.projects?.length) {
+      setProjects(data.projects)
     }
+  }
 
+  const loadActions = async () => {
+    const data = await apiJson<{ actions?: InboxAction[] }>('/api/inbox')
+    if (data?.actions?.length) {
+      setActions(data.actions)
+    }
+  }
+
+  useEffect(() => {
     void loadProjects()
+    void loadActions()
   }, [])
 
+  useEffect(() => {
+    const id = window.setInterval(async () => {
+      if (!projects.some((project) => project.active)) return
+      const data = await apiSend<{ projects?: Project[]; actions?: InboxAction[] }>('/api/autonomy/tick', { method: 'POST' })
+      if (data?.projects?.length) setProjects(data.projects)
+      if (data?.actions) setActions(data.actions.length ? data.actions : seedActions)
+    }, 45000)
+    return () => window.clearInterval(id)
+  }, [projects])
+
+  const setProjectActive = async (id: string, active: boolean) => {
+    setProjects((items) =>
+      items.map((project) =>
+        project.id === id
+          ? {
+              ...project,
+              active,
+              autonomous: active,
+              cadence: active ? 'slow' : 'paused',
+              status: active && project.status !== 'needs-input' && project.status !== 'blocked' ? 'running' : project.status,
+              agentsActive: active ? Math.max(project.agentsActive, 1) : 0,
+            }
+          : project,
+      ),
+    )
+    const data = await apiSend<{ projects?: Project[]; actions?: InboxAction[] }>(`/api/projects/${id}/activation`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ active }),
+    })
+    if (data?.projects?.length) setProjects(data.projects)
+    if (data?.actions) setActions(data.actions.length ? data.actions : seedActions)
+  }
+
   const screen = useMemo(() => {
-    if (view === 'dashboard') return <Dashboard projects={projects} openInbox={(id) => { setProjectFilter(id); setView('inbox') }} />
+    if (view === 'dashboard') return <Dashboard projects={projects} openInbox={(id) => { setProjectFilter(id); setView('inbox') }} setProjectActive={setProjectActive} />
     if (view === 'inbox') return <Inbox projects={projects} projectFilter={projectFilter} actions={actions} setActions={setActions} openReview={() => setView('review')} />
     if (view === 'queue') return <Queue projects={projects} openReview={() => setView('review')} />
-    if (view === 'graph') return <Graph openReview={() => setView('review')} />
+    if (view === 'graph') return <Graph projects={projects} openReview={() => setView('review')} />
     if (view === 'review') return <Review back={() => setView('queue')} />
     return <SettingsView />
   }, [actions, projectFilter, projects, view])
 
-  return <><div className="starfield" /><div className="gridwash" /><div className="app"><Rail view={view} setView={setView} actionsOpen={actions.length} /><HUD view={view} projects={projects} /><main className="main">{screen}</main><CommandBar model={model} setModel={setModel} /></div></>
+  return <><div className="starfield" /><div className="gridwash" /><div className="app"><Rail view={view} setView={setView} actionsOpen={actions.length} /><HUD view={view} projects={projects} /><main className="main">{screen}</main><CommandBar model={model} setModel={setModel} projects={projects} projectContext={projectContext} setProjectContext={setProjectContext} setProjectActive={setProjectActive} afterDispatch={async () => { await loadProjects(); await loadActions() }} /></div></>
 }

@@ -3,6 +3,19 @@ export type Label = 'work' | 'personal'
 export type ModelId = 'opus' | 'codex' | 'spark'
 export type Priority = 'P0' | 'P1' | 'P2' | 'P3'
 
+export type ProjectSource = 'local' | 'github'
+
+export type GithubProjectInfo = {
+  owner: string
+  repo: string
+  fullName: string
+  url: string
+  cloneUrl: string
+  defaultBranch?: string
+  visibility?: 'public' | 'private' | 'internal' | 'unknown'
+  archived?: boolean
+}
+
 export type Project = {
   id: string
   name: string
@@ -26,6 +39,20 @@ export type Project = {
   lastEvent: string
   lastAgo: string
   spark: number[]
+  source?: ProjectSource
+  localExists?: boolean
+  graphReady?: boolean
+  skillsPath?: string
+  skillsReady?: boolean
+  skillsUpdatedAt?: string | null
+  learnedItems?: number
+  active?: boolean
+  autonomous?: boolean
+  cadence?: 'slow' | 'paused'
+  remote?: string
+  dirtyFiles?: number
+  behind?: number
+  github?: GithubProjectInfo
 }
 
 export type ModelInfo = {
@@ -73,6 +100,7 @@ export type InboxAction = {
 
 export type GraphNode = {
   id: string
+  label?: string
   c: number
   x: number
   y: number
@@ -80,9 +108,27 @@ export type GraphNode = {
   kind: 'god' | 'file' | 'fn'
   agent?: boolean
   hot?: boolean
+  project?: string
+  meta?: Record<string, string | number | boolean>
 }
 
 export type GraphEdge = [string, string, 'ext' | 'inf' | 'amb']
+
+export type GraphCommunity = {
+  id: number
+  name: string
+  color: string
+}
+
+export type GraphPayload = {
+  source: string
+  projectId: string
+  missing?: boolean
+  generated?: boolean
+  nodes: GraphNode[]
+  edges: GraphEdge[]
+  communities: GraphCommunity[]
+}
 
 export type Patch = {
   task: string

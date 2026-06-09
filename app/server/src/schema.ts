@@ -17,6 +17,14 @@ CREATE TABLE IF NOT EXISTS projects (
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
+CREATE TABLE IF NOT EXISTS project_settings (
+  project_id TEXT PRIMARY KEY,
+  active INTEGER NOT NULL DEFAULT 0,
+  autonomous INTEGER NOT NULL DEFAULT 0,
+  cadence TEXT NOT NULL DEFAULT 'slow',
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL,
@@ -30,6 +38,27 @@ CREATE TABLE IF NOT EXISTS tasks (
   stage TEXT NOT NULL DEFAULT 'queued',
   files INTEGER NOT NULL DEFAULT 0,
   branch TEXT NOT NULL DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS agent_runs (
+  id TEXT PRIMARY KEY,
+  task_id TEXT NOT NULL,
+  project_id TEXT NOT NULL,
+  model TEXT NOT NULL,
+  provider TEXT NOT NULL,
+  command TEXT NOT NULL,
+  cwd TEXT NOT NULL,
+  worktree_path TEXT,
+  pid INTEGER,
+  status TEXT NOT NULL,
+  prompt TEXT NOT NULL,
+  stdout TEXT,
+  stderr TEXT,
+  final_text TEXT,
+  exit_code INTEGER,
+  started_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  completed_at TEXT
 );
 
 CREATE TABLE IF NOT EXISTS inbox_actions (
