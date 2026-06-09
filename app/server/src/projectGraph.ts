@@ -51,6 +51,7 @@ export function buildProjectGraph(projects: LocalProject[], projectId = 'all'): 
     { id: 2, name: 'github', color: 'var(--c4)' },
     { id: 3, name: 'graphify', color: 'var(--c5)' },
     { id: 4, name: 'needs-input', color: 'var(--cyan)' },
+    { id: 5, name: 'manual workflows', color: 'var(--c3)' },
   ]
   const nodes: GraphNode[] = [
     { id: 'Northstar', label: 'Northstar', c: 0, x: 500, y: 105, deg: projects.length, kind: 'god', hot: true, meta: { projects: projects.length } },
@@ -58,19 +59,22 @@ export function buildProjectGraph(projects: LocalProject[], projectId = 'all'): 
     { id: 'GitHub', label: 'GitHub', c: 2, x: 685, y: 260, deg: projects.filter((p) => p.github).length, kind: 'god' },
     { id: 'Graphify', label: 'graphify', c: 3, x: 500, y: 560, deg: projects.filter((p) => p.graphReady).length, kind: 'god' },
     { id: 'NeedsInput', label: 'needs input', c: 4, x: 500, y: 335, deg: projects.filter((p) => p.status === 'needs-input').length, kind: 'fn', agent: true },
+    { id: 'ManualWorkflows', label: 'manual workflows', c: 5, x: 500, y: 240, deg: projects.filter((p) => p.source === 'manual').length, kind: 'god' },
   ]
   const edges: GraphEdge[] = [
     ['Northstar', 'LocalRepos', 'ext'],
     ['Northstar', 'GitHub', 'ext'],
     ['Northstar', 'Graphify', 'inf'],
     ['Northstar', 'NeedsInput', 'ext'],
+    ['Northstar', 'ManualWorkflows', 'ext'],
   ]
 
   const projectNodes = projects.slice(0, 42)
   projectNodes.forEach((project, index) => {
     const local = project.localExists
+    const manual = project.source === 'manual'
     const githubOnly = !local && project.github
-    const c = project.status === 'needs-input' ? 4 : githubOnly ? 2 : 1
+    const c = project.status === 'needs-input' ? 4 : manual ? 5 : githubOnly ? 2 : 1
     const pos = layout(index, projectNodes.length, local ? 248 : 310)
     const id = `project:${project.id}`
     nodes.push({
@@ -86,13 +90,13 @@ export function buildProjectGraph(projects: LocalProject[], projectId = 'all'): 
       project: project.id,
       meta: {
         branch: project.branch,
-        source: project.localExists ? 'local' : 'github',
+        source: project.source,
         status: project.status,
         graph: project.graphReady ? 'ready' : 'missing',
         github: project.github?.fullName ?? 'unlinked',
       },
     })
-    edges.push([local ? 'LocalRepos' : 'GitHub', id, local ? 'ext' : 'inf'])
+    edges.push([manual ? 'ManualWorkflows' : local ? 'LocalRepos' : 'GitHub', id, local || manual ? 'ext' : 'inf'])
     if (project.github && local) edges.push(['GitHub', id, 'inf'])
     if (project.graphReady) edges.push(['Graphify', id, 'ext'])
     if (project.status === 'needs-input') edges.push(['NeedsInput', id, 'amb'])
@@ -157,8 +161,8 @@ function buildFocusedProjectGraph(project: LocalProject): GraphPayload {
   const rootId = `project:${project.id}`
   const nodes: GraphNode[] = [
     { id: rootId, label: project.name, c: 0, x: 500, y: 145, deg: 8, kind: 'god', hot: project.status === 'needs-input', project: project.id, meta: { status: project.status, branch: project.branch } },
-    { id: 'local', label: project.localExists ? 'local checkout' : 'not cloned', c: 1, x: 280, y: 310, deg: 3, kind: 'file', project: project.id, meta: { path: project.path } },
-    { id: 'github', label: project.github?.fullName ?? 'GitHub unlinked', c: 2, x: 720, y: 310, deg: 3, kind: 'file', project: project.id, meta: { url: project.github?.url ?? project.remote ?? 'none', visibility: project.github?.visibility ?? 'unknown' } },
+    { id: 'local', label: project.source === 'manual' ? 'manual project' : project.localExists ? 'local checkout' : 'not cloned', c: 1, x: 280, y: 310, deg: 3, kind: 'file', project: project.id, meta: { path: project.path } },
+    { id: 'github', label: project.source === 'manual' ? 'external data links' : project.github?.fullName ?? 'GitHub unlinked', c: 2, x: 720, y: 310, deg: 3, kind: 'file', project: project.id, meta: { url: project.github?.url ?? project.remote ?? 'none', visibility: project.github?.visibility ?? 'unknown' } },
     { id: 'graphify', label: project.graphReady ? 'graph ready' : 'graph missing', c: 3, x: 390, y: 525, deg: 2, kind: 'fn', project: project.id, meta: { nodes: project.nodes, communities: project.communities } },
     { id: 'queue', label: project.status === 'needs-input' ? 'needs your answer' : 'queued agent work', c: 4, x: 610, y: 525, deg: project.openTasks, kind: 'fn', agent: project.agentsActive > 0, project: project.id, meta: { openTasks: project.openTasks, queued: project.queued } },
   ]

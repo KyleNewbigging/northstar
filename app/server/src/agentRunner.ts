@@ -9,7 +9,8 @@ import { logRoot, worktreeRoot } from './paths.js'
 import { appendProjectLearning, ensureProjectSkillsFile, extractLearningCandidates, readProjectSkills } from './projectSkills.js'
 import type { LocalProject } from './projects.js'
 
-type DispatchModel = 'opus' | 'spark' | 'codex'
+export type DispatchModel = 'opus' | 'spark' | 'codex'
+export type TaskPriority = 'P0' | 'P1' | 'P2' | 'P3'
 type RunStatus = 'running' | 'done' | 'blocked'
 
 type RunnerCommand = {
@@ -26,6 +27,11 @@ export type DispatchRequest = {
   model?: DispatchModel
   prompt?: string
   projectContext?: string
+  taskId?: string
+  taskTitle?: string
+  taskPriority?: TaskPriority
+  taskAgent?: string
+  taskStage?: string
 }
 
 export type DispatchResult =
@@ -119,11 +125,12 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
 
   ensureProjectSkillsFile(project)
 
-  const taskId = `RUN-${Date.now().toString(36)}`
+  const taskId = cleanTaskId(request.taskId) || `RUN-${Date.now().toString(36)}`
+  const runSlug = `RUN-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 7)}`
   const runId = randomUUID()
   let worktreePath = ''
   try {
-    worktreePath = prepareWorktree(repoPath, project.id, taskId)
+    worktreePath = prepareWorktree(repoPath, project.id, runSlug)
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Unable to create agent worktree.'
     return { ok: false, error: message }
@@ -132,10 +139,25 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
   const command = buildRunnerCommand(model, prompt, project, worktreePath, runId, scopeContext)
 
   ensureProjectRow(db, project)
+  const taskTitle = (request.taskTitle?.trim() || prompt.slice(0, 80)).slice(0, 160)
+  const taskPriority = request.taskPriority ?? 'P2'
+  const taskAgent = request.taskAgent?.trim() || command.provider
+  const taskStage = request.taskStage?.trim() || `${modelLabel(model)} running`
   db.prepare(
     `INSERT INTO tasks (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch)
-     VALUES (?, ?, ?, ?, ?, 'running', 'P2', 0.05, 'now', ?, 0, ?)`,
-  ).run(taskId, project.id, prompt.slice(0, 80), model, command.provider, `${modelLabel(model)} running`, `agent/${taskId.toLowerCase()}`)
+     VALUES (?, ?, ?, ?, ?, 'running', ?, 0.05, 'now', ?, 0, ?)
+     ON CONFLICT(id) DO UPDATE SET
+       project_id = excluded.project_id,
+       title = excluded.title,
+       model = excluded.model,
+       agent = excluded.agent,
+       status = 'running',
+       priority = excluded.priority,
+       progress = excluded.progress,
+       eta = excluded.eta,
+       stage = excluded.stage,
+       branch = excluded.branch`,
+  ).run(taskId, project.id, taskTitle, model, taskAgent, taskPriority, taskStage, `agent/${runSlug.toLowerCase()}`)
 
   db.prepare(
     `INSERT INTO agent_runs (id, task_id, project_id, model, provider, command, cwd, worktree_path, status, prompt, stdout, stderr, final_text)
@@ -471,4 +493,10 @@ function expandHome(path: string) {
 
 function safeFileStem(value: string) {
   return value.toLowerCase().replace(/[^a-z0-9._-]+/g, '-').replace(/(^-|-$)/g, '') || 'project'
+}
+
+function cleanTaskId(value?: string) {
+  const trimmed = value?.trim()
+  if (!trimmed) return ''
+  return trimmed.replace(/[^A-Za-z0-9._:-]+/g, '-').slice(0, 120)
 }

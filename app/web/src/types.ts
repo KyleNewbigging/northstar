@@ -3,7 +3,7 @@ export type Label = 'work' | 'personal'
 export type ModelId = 'opus' | 'codex' | 'spark'
 export type Priority = 'P0' | 'P1' | 'P2' | 'P3'
 
-export type ProjectSource = 'local' | 'github'
+export type ProjectSource = 'local' | 'github' | 'manual'
 
 export type GithubProjectInfo = {
   owner: string

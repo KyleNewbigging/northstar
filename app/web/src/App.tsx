@@ -690,7 +690,8 @@ function Stat({ label, value, sub, icon, accent }: { label: string; value: strin
 }
 
 function ProjectCard({ project, onClick, setProjectActive }: { project: Project; onClick: () => void; setProjectActive: (id: string, active: boolean) => void }) {
-  const sourceLabel = project.localExists === false ? 'github-only' : project.github ? 'local + github' : 'local'
+  const sourceLabel = project.source === 'manual' ? 'manual workflow' : project.localExists === false ? 'github-only' : project.github ? 'local + github' : 'local'
+  const sourceDetail = project.source === 'manual' ? project.path.replace(/^manual:/, '') : project.github?.fullName ?? 'no GitHub remote'
   const visibility = project.github?.visibility && project.github.visibility !== 'unknown' ? project.github.visibility : null
   return (
     <div
@@ -705,7 +706,7 @@ function ProjectCard({ project, onClick, setProjectActive }: { project: Project;
       <div className="row gap10" style={{ justifyContent: 'space-between' }}><div className="row gap8 grow"><Ring value={project.health} /><div className="col grow" style={{ minWidth: 0 }}><span className="mono proj-name">{project.name}</span><span className="row gap6" style={{ fontSize: 10.5, color: 'var(--ink-3)' }}><GitBranch size={11} />{project.branch}<span className={`lbl lbl-${project.label}`}>{project.label}</span></span></div></div><StatusTag status={project.status} /></div>
       <div className="proj-source">
         <span className="tag mono"><i className={`dot ${project.localExists === false ? 'dot-queue' : 'dot-run'}`} />{sourceLabel}</span>
-        {project.github ? <span className="proj-gh mono">{project.github.fullName}</span> : <span className="proj-gh mono">no GitHub remote</span>}
+        <span className="proj-gh mono">{sourceDetail}</span>
         <span className={`tag mono skill-tag${project.skillsReady ? ' on' : ''}`} title={project.skillsPath ?? 'Project skills file'}>
           <Sparkles size={11} />
           {project.skillsReady ? `${project.learnedItems ?? 0} learned` : 'skills blank'}
@@ -741,25 +742,39 @@ function Inbox({ projects, projectFilter, actions, setActions, openReview }: { p
 }
 
 function Queue({ projects, openReview }: { projects: Project[]; openReview: () => void }) {
-  const [paused, setPaused] = useState<Record<string, boolean>>({})
   const [runs, setRuns] = useState<AgentRun[]>([])
   const [queueTasks, setQueueTasks] = useState<QueueTask[]>([])
+  const [working, setWorking] = useState<Record<string, boolean>>({})
+  const [message, setMessage] = useState('')
+
+  const loadRuns = async () => {
+    const data = await apiJson<{ runs?: AgentRun[] }>('/api/runs')
+    if (data?.runs) setRuns(data.runs)
+  }
+
+  const loadQueue = async () => {
+    const data = await apiJson<{ tasks?: QueueTask[] }>('/api/queue')
+    if (data?.tasks) setQueueTasks(data.tasks)
+  }
+
+  const refresh = async () => {
+    await Promise.all([loadRuns(), loadQueue()])
+  }
 
   useEffect(() => {
     let alive = true
-    const loadRuns = async () => {
-      const data = await apiJson<{ runs?: AgentRun[] }>('/api/runs')
-      if (alive && data?.runs) setRuns(data.runs)
+    const guardedRefresh = async () => {
+      const [runsData, queueData] = await Promise.all([
+        apiJson<{ runs?: AgentRun[] }>('/api/runs'),
+        apiJson<{ tasks?: QueueTask[] }>('/api/queue'),
+      ])
+      if (!alive) return
+      if (runsData?.runs) setRuns(runsData.runs)
+      if (queueData?.tasks) setQueueTasks(queueData.tasks)
     }
-    const loadQueue = async () => {
-      const data = await apiJson<{ tasks?: QueueTask[] }>('/api/queue')
-      if (alive && data?.tasks) setQueueTasks(data.tasks)
-    }
-    void loadRuns()
-    void loadQueue()
+    void guardedRefresh()
     const id = window.setInterval(() => {
-      void loadRuns()
-      void loadQueue()
+      void guardedRefresh()
     }, 2500)
     return () => {
       alive = false
@@ -768,7 +783,34 @@ function Queue({ projects, openReview }: { projects: Project[]; openReview: () =
   }, [])
 
   const tasks = queueTasks.length ? queueTasks : seedQueue
-  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">{tasks[0]?.title ?? 'Seed project queues from Schedule'}</span><span style={{ color: 'var(--ink-3)' }}>{tasks[0] ? `${projectName(projects, tasks[0].project)} · ${tasks[0].stage}` : 'Northstar · onboarding needed'}</span></div><button className="btn btn-primary">Resolve</button></div></div><div className="row gap6 q-filters"><span className="chip on">Queued <span className="chip-n">{tasks.length}</span></span><span className="chip">Live <span className="chip-n">{runs.length}</span></span><span className="chip">Running</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>worktrees · strict no-API</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{tasks.map((q) => <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" onClick={() => setPaused({ ...paused, [q.id]: !paused[q.id] })}>{paused[q.id] ? <Play size={12} /> : <Pause size={12} />}</button></div></div>)}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Zap size={14} style={{ color: 'var(--star)' }} /><h3>Live CLI Runs</h3><span className="grow" /><span className="tag">{runs.filter((run) => run.status === 'running').length} running</span></div><div className="scroll grow" style={{ padding: 12 }}>{runs.length ? runs.map((run) => <div key={run.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${run.status === 'blocked' ? 'high' : run.status === 'running' ? 'med' : 'low'}`} /><span className="mono">{modelLabel(run.model)}</span><span className="grow" /><span className="tag mono">{run.status}</span></div><p className="inbox-q">{(runOutput(run) || 'Waiting for CLI output...').replace(/\s+/g, ' ').slice(0, 180)}</p><p className="inbox-ctx">{runWorktree(run)}</p></div>) : <div className="inbox-empty">No live CLI runs yet.</div>}</div></div></div></div>
+  const firstRunnable = tasks.find((task) => task.status !== 'running' && task.status !== 'done')
+
+  const runTask = async (task: QueueTask) => {
+    setWorking((current) => ({ ...current, [task.id]: true }))
+    const data = await apiSend<{ ok?: boolean; error?: string; run?: { id: string } }>(`/api/queue/${task.id}/dispatch`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    setWorking((current) => ({ ...current, [task.id]: false }))
+    setMessage(data?.ok ? `Dispatched ${task.id}` : data?.error ?? `Dispatch failed for ${task.id}`)
+    await refresh()
+  }
+
+  const togglePause = async (task: QueueTask) => {
+    const paused = task.status === 'blocked' && task.stage === 'paused manually'
+    setWorking((current) => ({ ...current, [task.id]: true }))
+    const data = await apiSend<{ ok?: boolean; status?: string; error?: string }>(`/api/queue/${task.id}/${paused ? 'resume' : 'pause'}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    setWorking((current) => ({ ...current, [task.id]: false }))
+    setMessage(data?.ok ? `${paused ? 'Resumed' : 'Paused'} ${task.id}` : data?.error ?? `Queue update failed for ${task.id}`)
+    await refresh()
+  }
+
+  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">{firstRunnable?.title ?? 'Seed project queues from Schedule'}</span><span style={{ color: 'var(--ink-3)' }}>{firstRunnable ? `${projectName(projects, firstRunnable.project)} · ${firstRunnable.stage}` : 'Northstar · onboarding needed'}</span></div><button className="btn btn-primary" disabled={!firstRunnable || working[firstRunnable.id]} onClick={() => firstRunnable && void runTask(firstRunnable)}><Play size={13} /> Dispatch</button></div></div><div className="row gap6 q-filters"><span className="chip on">Queued <span className="chip-n">{tasks.filter((task) => task.status === 'queued').length}</span></span><span className="chip">Live <span className="chip-n">{runs.length}</span></span><span className="chip">Running <span className="chip-n">{tasks.filter((task) => task.status === 'running').length}</span></span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>{message || 'worktrees · strict no-API'}</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{tasks.map((q) => { const paused = q.status === 'blocked' && q.stage === 'paused manually'; const runnable = q.status !== 'running' && q.status !== 'done'; return <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" disabled={!runnable || working[q.id]} onClick={() => void runTask(q)}><Play size={12} /> Run</button><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" disabled={q.status === 'running' || working[q.id]} title={paused ? 'Resume task' : 'Pause task'} onClick={() => void togglePause(q)}>{paused ? <Play size={12} /> : <Pause size={12} />}</button></div></div> })}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Zap size={14} style={{ color: 'var(--star)' }} /><h3>Live CLI Runs</h3><span className="grow" /><span className="tag">{runs.filter((run) => run.status === 'running').length} running</span></div><div className="scroll grow" style={{ padding: 12 }}>{runs.length ? runs.map((run) => <div key={run.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${run.status === 'blocked' ? 'high' : run.status === 'running' ? 'med' : 'low'}`} /><span className="mono">{modelLabel(run.model)}</span><span className="grow" /><span className="tag mono">{run.status}</span></div><p className="inbox-q">{(runOutput(run) || 'Waiting for CLI output...').replace(/\s+/g, ' ').slice(0, 180)}</p><p className="inbox-ctx">{runWorktree(run)}</p></div>) : <div className="inbox-empty">No live CLI runs yet.</div>}</div></div></div></div>
 }
 
 const fallbackScheduler: SchedulerSettings = {
@@ -791,6 +833,7 @@ function Schedule() {
   const [message, setMessage] = useState('')
   const [saving, setSaving] = useState(false)
   const [seeding, setSeeding] = useState(false)
+  const [ticking, setTicking] = useState(false)
 
   const loadSchedule = async () => {
     const [schedulerData, onboardingData] = await Promise.all([
@@ -834,6 +877,21 @@ function Schedule() {
     else setMessage('Onboarding failed')
   }
 
+  const runTick = async () => {
+    setTicking(true)
+    const data = await apiSend<{ ok?: boolean; reason?: string; dispatched?: unknown[]; skipped?: unknown[] }>('/api/scheduler/tick', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ force: true }),
+    })
+    setTicking(false)
+    if (data?.ok) {
+      setMessage(data.reason ?? `Tick dispatched ${data.dispatched?.length ?? 0}; skipped ${data.skipped?.length ?? 0}`)
+    } else {
+      setMessage('Scheduler tick failed')
+    }
+  }
+
   const setBoolean = (key: keyof Pick<SchedulerSettings, 'enabled' | 'sparkEnabled' | 'opusEnabled' | 'codexEnabled'>, value: boolean) => {
     setScheduler((current) => ({ ...current, [key]: value }))
   }
@@ -856,7 +914,7 @@ function Schedule() {
               <button type="button" className={`toggle-pill${scheduler.codexEnabled ? ' on' : ''}`} onClick={() => setBoolean('codexEnabled', !scheduler.codexEnabled)}><ModelChip id="codex" small />Reserved</button>
             </div>
           </div>
-          <div className="row gap8 schedule-actions"><button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving' : 'Save schedule'}</button><button className="btn" onClick={seed} disabled={seeding}>{seeding ? 'Indexing' : 'Seed onboarding'}</button><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>{message || scheduler.updatedAt}</span></div>
+          <div className="row gap8 schedule-actions"><button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving' : 'Save schedule'}</button><button className="btn" onClick={seed} disabled={seeding}>{seeding ? 'Indexing' : 'Seed onboarding'}</button><button className="btn" onClick={runTick} disabled={ticking}><Play size={13} />{ticking ? 'Ticking' : 'Run tick'}</button><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>{message || scheduler.updatedAt}</span></div>
         </div>
         <div className="panel brackets col schedule-side">
           <div className="panel-hd"><Sparkles size={14} style={{ color: 'var(--star)' }} /><h3>Project Onboarding</h3><span className="grow" /><span className="tag">{onboarding.length} indexed</span></div>

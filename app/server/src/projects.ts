@@ -30,7 +30,7 @@ export type LocalProject = {
   lastEvent: string
   lastAgo: string
   spark: number[]
-  source: 'local' | 'github'
+  source: 'local' | 'github' | 'manual'
   localExists: boolean
   graphReady: boolean
   skillsPath: string
