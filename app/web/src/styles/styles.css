@@ -1,0 +1,197 @@
+/* ============================================================
+   NORTHSTAR — local AI project command center
+   Design system: deep-space cockpit, mono-forward, amber north-star
+   ============================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=Geist:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500;700&display=swap');
+
+:root {
+  /* --- surfaces (deep space, cool blue-black) --- */
+  --void:      oklch(0.13 0.014 255);   /* deepest bg */
+  --bg:        oklch(0.155 0.016 255);  /* app bg */
+  --panel:     oklch(0.185 0.018 255);  /* panel surface */
+  --panel-2:   oklch(0.215 0.02 255);   /* raised surface */
+  --panel-3:   oklch(0.255 0.022 255);  /* hover / input */
+  --line:      oklch(0.30 0.02 255);    /* hairline border */
+  --line-soft: oklch(0.245 0.018 255);
+
+  /* --- text --- */
+  --ink:       oklch(0.95 0.008 250);   /* primary text */
+  --ink-2:     oklch(0.74 0.014 250);   /* secondary */
+  --ink-3:     oklch(0.56 0.016 252);   /* muted / labels */
+  --ink-4:     oklch(0.42 0.018 255);   /* faint */
+
+  /* --- north star amber (the single signal) --- */
+  --star:      oklch(0.80 0.135 75);    /* #ffb454-ish */
+  --star-dim:  oklch(0.68 0.12 72);
+  --star-glow: oklch(0.80 0.135 75 / 0.22);
+  --star-ink:  oklch(0.22 0.05 70);     /* text on amber */
+
+  /* --- secondary cool (telemetry / info) --- */
+  --cyan:      oklch(0.80 0.09 220);
+  --cyan-dim:  oklch(0.64 0.08 222);
+
+  /* --- status (shared low chroma) --- */
+  --ok:        oklch(0.78 0.11 155);
+  --warn:      oklch(0.80 0.135 75);
+  --err:       oklch(0.68 0.15 22);
+  --idle:      oklch(0.62 0.03 250);
+
+  /* --- community hues (graph cockpit clusters) --- */
+  --c1: oklch(0.74 0.12 75);    /* amber  */
+  --c2: oklch(0.74 0.10 220);   /* cyan   */
+  --c3: oklch(0.72 0.12 300);   /* violet */
+  --c4: oklch(0.76 0.12 155);   /* green  */
+  --c5: oklch(0.72 0.13 25);    /* coral  */
+  --c6: oklch(0.74 0.10 260);   /* indigo */
+
+  /* --- geometry --- */
+  --r-xs: 3px;  --r-sm: 5px;  --r-md: 7px;  --r-lg: 10px;
+  --rail: 60px;
+  --hud-h: 52px;
+  --cmd-h: 66px;
+
+  --mono: 'JetBrains Mono', ui-monospace, monospace;
+  --sans: 'Geist', system-ui, sans-serif;
+
+  --shadow: 0 8px 30px oklch(0.08 0.02 255 / 0.5);
+  --shadow-pop: 0 14px 50px oklch(0.06 0.02 255 / 0.7);
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+
+html, body { height: 100%; }
+
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: var(--sans);
+  font-size: 13px;
+  line-height: 1.45;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  overflow: hidden;
+}
+
+/* faint starfield + grid wash applied to the app root */
+.starfield {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    radial-gradient(1px 1px at 18% 32%, oklch(0.9 0.02 250 / 0.5), transparent),
+    radial-gradient(1px 1px at 72% 18%, oklch(0.9 0.02 250 / 0.35), transparent),
+    radial-gradient(1px 1px at 44% 72%, oklch(0.9 0.02 250 / 0.4), transparent),
+    radial-gradient(1.5px 1.5px at 88% 64%, var(--star-glow), transparent),
+    radial-gradient(1px 1px at 28% 88%, oklch(0.9 0.02 250 / 0.3), transparent),
+    radial-gradient(1px 1px at 62% 48%, oklch(0.9 0.02 250 / 0.25), transparent);
+  background-size: 100% 100%;
+  opacity: 0.8;
+}
+.gridwash {
+  position: fixed; inset: 0; pointer-events: none; z-index: 0;
+  background-image:
+    linear-gradient(oklch(0.5 0.02 255 / 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, oklch(0.5 0.02 255 / 0.035) 1px, transparent 1px);
+  background-size: 52px 52px;
+  -webkit-mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 30%, transparent 100%);
+          mask-image: radial-gradient(ellipse 90% 80% at 50% 40%, #000 30%, transparent 100%);
+}
+
+/* ---------- typography helpers ---------- */
+.mono { font-family: var(--mono); }
+.tnum { font-variant-numeric: tabular-nums; font-family: var(--mono); }
+.eyebrow {
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.16em; text-transform: uppercase; color: var(--ink-3);
+}
+.kbd {
+  font-family: var(--mono); font-size: 10px; color: var(--ink-2);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-xs); padding: 1px 5px; line-height: 1.5;
+}
+
+/* ---------- panel + HUD bracket framing ---------- */
+.panel {
+  position: relative;
+  background: linear-gradient(180deg, var(--panel), oklch(0.17 0.017 255));
+  border: 1px solid var(--line-soft);
+  border-radius: var(--r-lg);
+}
+.panel-hd {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-bottom: 1px solid var(--line-soft);
+}
+.panel-hd h3 {
+  font-family: var(--mono); font-size: 11px; font-weight: 500;
+  letter-spacing: 0.1em; text-transform: uppercase; color: var(--ink-2);
+}
+/* corner ticks */
+.brackets::before, .brackets::after {
+  content: ''; position: absolute; width: 9px; height: 9px; pointer-events: none;
+  border-color: var(--star-dim); opacity: 0.55;
+}
+.brackets::before { top: 7px; left: 7px; border-top: 1.5px solid; border-left: 1.5px solid; }
+.brackets::after  { bottom: 7px; right: 7px; border-bottom: 1.5px solid; border-right: 1.5px solid; }
+
+/* ---------- buttons ---------- */
+.btn {
+  display: inline-flex; align-items: center; gap: 7px;
+  font-family: var(--mono); font-size: 11.5px; font-weight: 500;
+  letter-spacing: 0.02em; color: var(--ink);
+  background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); padding: 7px 12px; cursor: pointer;
+  transition: background .14s, border-color .14s, color .14s, transform .06s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--panel-3); border-color: var(--ink-4); }
+.btn:active { transform: translateY(1px); }
+.btn-primary {
+  background: var(--star); color: var(--star-ink); border-color: var(--star);
+  font-weight: 700;
+}
+.btn-primary:hover { background: var(--star-dim); border-color: var(--star-dim); }
+.btn-ghost { background: transparent; border-color: transparent; color: var(--ink-2); }
+.btn-ghost:hover { background: var(--panel-2); color: var(--ink); }
+.btn-sm { padding: 4px 9px; font-size: 10.5px; }
+.btn-danger:hover { border-color: var(--err); color: var(--err); }
+
+/* ---------- chips / tags ---------- */
+.tag {
+  display: inline-flex; align-items: center; gap: 5px;
+  font-family: var(--mono); font-size: 10px; font-weight: 500;
+  letter-spacing: 0.04em; text-transform: uppercase; white-space: nowrap;
+  padding: 2px 7px; border-radius: 100px;
+  border: 1px solid var(--line); color: var(--ink-2); background: var(--panel-2);
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; flex: none; }
+.dot-run  { background: var(--star); box-shadow: 0 0 8px var(--star-glow); }
+.dot-queue{ background: var(--cyan); }
+.dot-block{ background: var(--err); }
+.dot-done { background: var(--ok); }
+.dot-idle { background: var(--idle); }
+
+@keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.35; } }
+.live { animation: pulse 1.6s ease-in-out infinite; }
+
+/* ---------- meters ---------- */
+.meter { height: 5px; border-radius: 100px; background: var(--panel-3); overflow: hidden; }
+.meter > i { display: block; height: 100%; border-radius: 100px; background: var(--star); }
+.meter.cool > i { background: var(--cyan); }
+
+/* ---------- scrollbars ---------- */
+::-webkit-scrollbar { width: 9px; height: 9px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--line); border-radius: 100px; border: 2px solid var(--bg); }
+::-webkit-scrollbar-thumb:hover { background: var(--ink-4); }
+
+/* ---------- utility ---------- */
+.row { display: flex; align-items: center; }
+.col { display: flex; flex-direction: column; }
+.gap4{gap:4px}.gap6{gap:6px}.gap8{gap:8px}.gap10{gap:10px}.gap12{gap:12px}.gap16{gap:16px}.gap20{gap:20px}
+.grow { flex: 1; min-width: 0; min-height: 0; }
+.divider { height: 1px; background: var(--line-soft); }
+.scroll { overflow: auto; }
+.fade-in { animation: fadeIn .35s ease both; }
+@keyframes fadeIn { from { transform: translateY(6px); } to { transform: none; } }
+
+/* focus ring */
+:focus-visible { outline: 2px solid var(--star); outline-offset: 1px; }

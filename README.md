@@ -1,5 +1,23 @@
-# Vue 3 + TypeScript + Vite
+# Northstar
 
-This template should help get you started developing with Vue 3 and TypeScript in Vite. The template uses Vue 3 `<script setup>` SFCs, check out the [script setup docs](https://v3.vuejs.org/api/sfc-script-setup.html#sfc-script-setup) to learn more.
+Northstar is a localhost-first AI project command center for developer work. It is being rebuilt from the Claude Design prototype in `prototype/` into a real React/Vite frontend with a local Fastify/SQLite backend foundation.
 
-Learn more about the recommended Project Setup and IDE Support in the [Vue Docs TypeScript Guide](https://vuejs.org/guide/typescript/overview.html#project-setup).
+## Development
+
+```sh
+npm install
+npm run dev:server
+npm run dev:web
+```
+
+The web app runs through Vite at `http://127.0.0.1:5173`. The local API server binds to `127.0.0.1:4317`, scans git repos under `~/dev`, and stores runtime data under `~/.northstar`.
+
+## Build
+
+```sh
+npm run build
+```
+
+## Reference Prototype
+
+`prototype/SPEC.md` and the files in `prototype/` are the visual and interaction source of truth. Production code lives under `app/web` and `app/server`.
