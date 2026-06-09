@@ -153,3 +153,26 @@ export type Patch = {
   rationale: string[]
   risks: Array<{ level: 'low' | 'med' | 'high'; text: string }>
 }
+
+export type SchedulerSettings = {
+  id: 'default'
+  enabled: boolean
+  timezone: string
+  startTime: string
+  endTime: string
+  weekdayReservePct: number
+  maxParallelRuns: number
+  sparkEnabled: boolean
+  opusEnabled: boolean
+  codexEnabled: boolean
+  updatedAt: string
+}
+
+export type ProjectOnboarding = {
+  projectId: string
+  profile: string
+  goals: string[]
+  queue: Array<{ id: string; title: string; model: ModelId; priority: Priority; stage: string }>
+  skills: string[]
+  updatedAt: string
+}

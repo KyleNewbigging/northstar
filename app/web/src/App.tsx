@@ -5,6 +5,7 @@ import {
   Boxes,
   Check,
   ChevronDown,
+  Clock,
   GitBranch,
   GitPullRequest,
   Inbox as InboxIcon,
@@ -21,9 +22,9 @@ import {
 } from 'lucide-react'
 
 import { actions as seedActions, communities, fallbackProjects, graphEdges, graphNodes, models, patch, queue as seedQueue } from './data/seed'
-import type { GraphPayload, InboxAction, ModelId, Project, QueueTask, Status } from './types'
+import type { GraphPayload, InboxAction, ModelId, Project, ProjectOnboarding, QueueTask, SchedulerSettings, Status } from './types'
 
-type View = 'dashboard' | 'inbox' | 'queue' | 'graph' | 'review' | 'settings'
+type View = 'dashboard' | 'inbox' | 'queue' | 'schedule' | 'graph' | 'review' | 'settings'
 
 type DispatchResponse =
   | { ok: true; task: { id: string; projectId: string; model: ModelId; status: string }; run: { id: string; status: string; finalText: string; exitCode: number | null; worktreePath?: string } }
@@ -99,6 +100,12 @@ function fmtNum(value: number) {
 
 function projectName(projects: Project[], id: string) {
   return projects.find((project) => project.id === id)?.name ?? id
+}
+
+function projectContextLabel(projects: Project[], id: string) {
+  if (id === 'active') return 'active-projects'
+  if (id === 'all') return 'all-projects'
+  return projectName(projects, id)
 }
 
 function runOutput(run: AgentRun) {
@@ -207,6 +214,7 @@ function Rail({ view, setView, actionsOpen }: { view: View; setView: (view: View
     ['dashboard', <Boxes size={18} />, 'Dashboard'],
     ['inbox', <InboxIcon size={18} />, 'Inbox'],
     ['queue', <Layers size={18} />, 'Agent Queue'],
+    ['schedule', <Clock size={18} />, 'Schedule'],
     ['graph', <Network size={18} />, 'Graph Cockpit'],
     ['review', <GitPullRequest size={18} />, 'Patch Review'],
   ]
@@ -244,6 +252,7 @@ function HUD({ view, projects }: { view: View; projects: Project[] }) {
     dashboard: ['FLIGHT DECK', `${projects.length} projects · local inventory`],
     inbox: ['MISSION INBOX', 'what needs you - across all projects'],
     queue: ['AGENT QUEUE', 'what to work on next'],
+    schedule: ['SCHEDULE', 'overnight usage and onboarding'],
     graph: ['GRAPH COCKPIT', 'graphify-oriented knowledge graph'],
     review: ['PATCH REVIEW', 'worktree patch preview'],
     settings: ['SETTINGS', 'local guardrails and model routing'],
@@ -301,6 +310,7 @@ function CommandBar({
   const recognitionRef = useRef<any>(null)
   const audioChunksRef = useRef<Blob[]>([])
   const activeEngineRef = useRef<VoiceEngine | null>(null)
+  const projectMenuRef = useRef<HTMLDivElement | null>(null)
 
   useEffect(() => {
     const hasSpeechApi = !!((window as any).SpeechRecognition || (window as any).webkitSpeechRecognition)
@@ -321,6 +331,28 @@ function CommandBar({
 
     void checkVoiceBackend()
   }, [])
+
+  useEffect(() => {
+    if (!projectOpen) return
+
+    const closeIfOutside = (event: PointerEvent | FocusEvent) => {
+      const target = event.target
+      if (target instanceof Node && projectMenuRef.current?.contains(target)) return
+      setProjectOpen(false)
+    }
+    const closeOnEscape = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') setProjectOpen(false)
+    }
+
+    document.addEventListener('pointerdown', closeIfOutside, true)
+    document.addEventListener('focusin', closeIfOutside)
+    document.addEventListener('keydown', closeOnEscape)
+    return () => {
+      document.removeEventListener('pointerdown', closeIfOutside, true)
+      document.removeEventListener('focusin', closeIfOutside)
+      document.removeEventListener('keydown', closeOnEscape)
+    }
+  }, [projectOpen])
 
   const stopRecognition = () => {
     if (recognitionRef.current) {
@@ -525,7 +557,7 @@ function CommandBar({
           <Mic size={17} />
           {voiceState !== 'idle' ? <span className="mic-rings"><i></i><i></i><i></i></span> : null}
         </button>
-        <div className="cmd-context">
+        <div className="cmd-context" ref={projectMenuRef}>
           <button
             type="button"
             className="cmd-ctx"
@@ -534,8 +566,8 @@ function CommandBar({
             aria-haspopup="menu"
             onClick={() => setProjectOpen((value) => !value)}
           >
-            <i className={`dot ${projects.some((project) => project.active) ? 'dot-run live' : 'dot-idle'}`} />
-            <span className="mono">{projectContext === 'active' ? 'active-projects' : projectName(projects, projectContext)}</span>
+            <i className={`dot ${projectContext === 'all' || projects.some((project) => project.active) ? 'dot-run live' : 'dot-idle'}`} />
+            <span className="mono">{projectContextLabel(projects, projectContext)}</span>
             <ChevronDown size={12} />
           </button>
           {projectOpen ? (
@@ -552,6 +584,18 @@ function CommandBar({
                 <i className="dot dot-run" />
                 <span className="mono grow">All active projects</span>
                 <span className="chip-n">{projects.filter((project) => project.active).length}</span>
+              </button>
+              <button
+                type="button"
+                className={`project-menu-all${projectContext === 'all' ? ' on' : ''}`}
+                onClick={() => {
+                  setProjectContext('all')
+                  setProjectOpen(false)
+                }}
+              >
+                <Search size={13} />
+                <span className="mono grow">All projects</span>
+                <span className="chip-n">{projects.length}</span>
               </button>
               <div className="eyebrow project-menu-hd">PROJECT AUTONOMY</div>
               <div className="project-menu-list">
@@ -699,6 +743,7 @@ function Inbox({ projects, projectFilter, actions, setActions, openReview }: { p
 function Queue({ projects, openReview }: { projects: Project[]; openReview: () => void }) {
   const [paused, setPaused] = useState<Record<string, boolean>>({})
   const [runs, setRuns] = useState<AgentRun[]>([])
+  const [queueTasks, setQueueTasks] = useState<QueueTask[]>([])
 
   useEffect(() => {
     let alive = true
@@ -706,15 +751,120 @@ function Queue({ projects, openReview }: { projects: Project[]; openReview: () =
       const data = await apiJson<{ runs?: AgentRun[] }>('/api/runs')
       if (alive && data?.runs) setRuns(data.runs)
     }
+    const loadQueue = async () => {
+      const data = await apiJson<{ tasks?: QueueTask[] }>('/api/queue')
+      if (alive && data?.tasks) setQueueTasks(data.tasks)
+    }
     void loadRuns()
-    const id = window.setInterval(loadRuns, 2500)
+    void loadQueue()
+    const id = window.setInterval(() => {
+      void loadRuns()
+      void loadQueue()
+    }, 2500)
     return () => {
       alive = false
       window.clearInterval(id)
     }
   }, [])
 
-  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">Prove Spark runner, then keep GPT-5.5 reserved</span><span style={{ color: 'var(--ink-3)' }}>Northstar · CLI subscription orchestration now owns dispatch</span></div><button className="btn btn-primary">Resolve</button></div></div><div className="row gap6 q-filters"><span className="chip on">Seeded <span className="chip-n">{seedQueue.length}</span></span><span className="chip">Live <span className="chip-n">{runs.length}</span></span><span className="chip">Running</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>worktrees · strict no-API</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{seedQueue.map((q) => <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" onClick={() => setPaused({ ...paused, [q.id]: !paused[q.id] })}>{paused[q.id] ? <Play size={12} /> : <Pause size={12} />}</button></div></div>)}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Zap size={14} style={{ color: 'var(--star)' }} /><h3>Live CLI Runs</h3><span className="grow" /><span className="tag">{runs.filter((run) => run.status === 'running').length} running</span></div><div className="scroll grow" style={{ padding: 12 }}>{runs.length ? runs.map((run) => <div key={run.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${run.status === 'blocked' ? 'high' : run.status === 'running' ? 'med' : 'low'}`} /><span className="mono">{modelLabel(run.model)}</span><span className="grow" /><span className="tag mono">{run.status}</span></div><p className="inbox-q">{(runOutput(run) || 'Waiting for CLI output...').replace(/\s+/g, ' ').slice(0, 180)}</p><p className="inbox-ctx">{runWorktree(run)}</p></div>) : <div className="inbox-empty">No live CLI runs yet.</div>}</div></div></div></div>
+  const tasks = queueTasks.length ? queueTasks : seedQueue
+  return <div className="screen queue-screen"><div className="queue-grid"><div className="col" style={{ minHeight: 0, gap: 12 }}><div className="panel brackets next-up"><span className="eyebrow" style={{ color: 'var(--star)' }}>WHAT TO WORK ON NEXT</span><div className="row gap12" style={{ marginTop: 8 }}><div className="col grow"><span className="q-title">{tasks[0]?.title ?? 'Seed project queues from Schedule'}</span><span style={{ color: 'var(--ink-3)' }}>{tasks[0] ? `${projectName(projects, tasks[0].project)} · ${tasks[0].stage}` : 'Northstar · onboarding needed'}</span></div><button className="btn btn-primary">Resolve</button></div></div><div className="row gap6 q-filters"><span className="chip on">Queued <span className="chip-n">{tasks.length}</span></span><span className="chip">Live <span className="chip-n">{runs.length}</span></span><span className="chip">Running</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>worktrees · strict no-API</span></div><div className="panel brackets grow col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Layers size={14} /><h3>Execution Queue</h3></div><div className="scroll grow">{tasks.map((q) => <div key={q.id} className="q-item"><div className="q-prio" style={{ background: priorityColor[q.priority] }} /><div className="col grow"><div className="row gap10"><span className="mono q-id">{q.id}</span><span className="q-title grow">{q.title}</span><StatusTag status={q.status} /></div><div className="row gap10"><span className="q-tag mono">{projectName(projects, q.project)}</span><ModelChip id={q.model} small /><span className="q-tag mono">{q.agent}</span><span className="grow" /><span className="mono" style={{ color: 'var(--ink-3)' }}>{q.stage}</span></div><div className="meter" style={{ marginTop: 8 }}><i style={{ width: pct(q.progress) }} /></div></div><div className="q-actions"><button className="btn btn-sm" onClick={openReview}>Review</button><button className="btn btn-sm btn-ghost" onClick={() => setPaused({ ...paused, [q.id]: !paused[q.id] })}>{paused[q.id] ? <Play size={12} /> : <Pause size={12} />}</button></div></div>)}</div></div></div><div className="panel brackets col" style={{ overflow: 'hidden' }}><div className="panel-hd"><Zap size={14} style={{ color: 'var(--star)' }} /><h3>Live CLI Runs</h3><span className="grow" /><span className="tag">{runs.filter((run) => run.status === 'running').length} running</span></div><div className="scroll grow" style={{ padding: 12 }}>{runs.length ? runs.map((run) => <div key={run.id} className="inbox-card"><div className="row gap8"><span className={`u-dot u-${run.status === 'blocked' ? 'high' : run.status === 'running' ? 'med' : 'low'}`} /><span className="mono">{modelLabel(run.model)}</span><span className="grow" /><span className="tag mono">{run.status}</span></div><p className="inbox-q">{(runOutput(run) || 'Waiting for CLI output...').replace(/\s+/g, ' ').slice(0, 180)}</p><p className="inbox-ctx">{runWorktree(run)}</p></div>) : <div className="inbox-empty">No live CLI runs yet.</div>}</div></div></div></div>
+}
+
+const fallbackScheduler: SchedulerSettings = {
+  id: 'default',
+  enabled: true,
+  timezone: 'America/Toronto',
+  startTime: '22:30',
+  endTime: '06:30',
+  weekdayReservePct: 35,
+  maxParallelRuns: 2,
+  sparkEnabled: true,
+  opusEnabled: true,
+  codexEnabled: false,
+  updatedAt: '',
+}
+
+function Schedule() {
+  const [scheduler, setScheduler] = useState<SchedulerSettings>(fallbackScheduler)
+  const [onboarding, setOnboarding] = useState<ProjectOnboarding[]>([])
+  const [message, setMessage] = useState('')
+  const [saving, setSaving] = useState(false)
+  const [seeding, setSeeding] = useState(false)
+
+  const loadSchedule = async () => {
+    const [schedulerData, onboardingData] = await Promise.all([
+      apiJson<{ scheduler?: SchedulerSettings }>('/api/scheduler'),
+      apiJson<{ onboarding?: ProjectOnboarding[] }>('/api/onboarding'),
+    ])
+    if (schedulerData?.scheduler) setScheduler(schedulerData.scheduler)
+    if (onboardingData?.onboarding) setOnboarding(onboardingData.onboarding)
+  }
+
+  useEffect(() => {
+    void loadSchedule()
+  }, [])
+
+  const save = async () => {
+    setSaving(true)
+    const data = await apiSend<{ scheduler?: SchedulerSettings }>('/api/scheduler', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(scheduler),
+    })
+    setSaving(false)
+    if (data?.scheduler) {
+      setScheduler(data.scheduler)
+      setMessage('Schedule saved')
+    } else {
+      setMessage('Schedule save failed')
+    }
+  }
+
+  const seed = async () => {
+    setSeeding(true)
+    const data = await apiSend<{ ok?: boolean; seeded?: number; profiles?: Record<string, number> }>('/api/onboarding/seed', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    setSeeding(false)
+    await loadSchedule()
+    if (data?.ok) setMessage(`Onboarded ${data.seeded ?? 0} projects`)
+    else setMessage('Onboarding failed')
+  }
+
+  const setBoolean = (key: keyof Pick<SchedulerSettings, 'enabled' | 'sparkEnabled' | 'opusEnabled' | 'codexEnabled'>, value: boolean) => {
+    setScheduler((current) => ({ ...current, [key]: value }))
+  }
+
+  return (
+    <div className="screen schedule-screen">
+      <div className="schedule-grid">
+        <div className="panel brackets col schedule-main">
+          <div className="panel-hd"><Clock size={14} /><h3>Nightly Window</h3><span className="grow" /><span className={`tag mono${scheduler.enabled ? '' : ' dim'}`}>{scheduler.enabled ? 'enabled' : 'paused'}</span></div>
+          <div className="schedule-form">
+            <label className="field-row"><span>Enabled</span><input type="checkbox" checked={scheduler.enabled} onChange={(event) => setBoolean('enabled', event.target.checked)} /></label>
+            <label className="field-row"><span>Timezone</span><input value={scheduler.timezone} onChange={(event) => setScheduler({ ...scheduler, timezone: event.target.value })} /></label>
+            <label className="field-row"><span>Start</span><input type="time" value={scheduler.startTime} onChange={(event) => setScheduler({ ...scheduler, startTime: event.target.value })} /></label>
+            <label className="field-row"><span>End</span><input type="time" value={scheduler.endTime} onChange={(event) => setScheduler({ ...scheduler, endTime: event.target.value })} /></label>
+            <label className="field-row"><span>Weekday reserve</span><input type="range" min="0" max="90" value={scheduler.weekdayReservePct} onChange={(event) => setScheduler({ ...scheduler, weekdayReservePct: Number(event.target.value) })} /><b>{scheduler.weekdayReservePct}%</b></label>
+            <label className="field-row"><span>Parallel runs</span><input type="number" min="1" max="6" value={scheduler.maxParallelRuns} onChange={(event) => setScheduler({ ...scheduler, maxParallelRuns: Number(event.target.value) })} /></label>
+            <div className="model-toggles">
+              <button type="button" className={`toggle-pill${scheduler.sparkEnabled ? ' on' : ''}`} onClick={() => setBoolean('sparkEnabled', !scheduler.sparkEnabled)}><ModelChip id="spark" small />Background</button>
+              <button type="button" className={`toggle-pill${scheduler.opusEnabled ? ' on' : ''}`} onClick={() => setBoolean('opusEnabled', !scheduler.opusEnabled)}><ModelChip id="opus" small />Planning</button>
+              <button type="button" className={`toggle-pill${scheduler.codexEnabled ? ' on' : ''}`} onClick={() => setBoolean('codexEnabled', !scheduler.codexEnabled)}><ModelChip id="codex" small />Reserved</button>
+            </div>
+          </div>
+          <div className="row gap8 schedule-actions"><button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving' : 'Save schedule'}</button><button className="btn" onClick={seed} disabled={seeding}>{seeding ? 'Indexing' : 'Seed onboarding'}</button><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>{message || scheduler.updatedAt}</span></div>
+        </div>
+        <div className="panel brackets col schedule-side">
+          <div className="panel-hd"><Sparkles size={14} style={{ color: 'var(--star)' }} /><h3>Project Onboarding</h3><span className="grow" /><span className="tag">{onboarding.length} indexed</span></div>
+          <div className="scroll grow">{onboarding.length ? onboarding.map((item) => <div key={item.projectId} className="onboard-row"><div className="row gap8"><span className="mono q-id">{item.projectId}</span><span className="tag mono">{item.profile}</span></div><p>{item.goals[0]}</p><div className="row gap6">{item.queue.slice(0, 3).map((task) => <span className="chip tiny" key={task.id}>{task.priority} {task.model}</span>)}</div></div>) : <div className="inbox-empty">No project profiles indexed yet.</div>}</div>
+        </div>
+      </div>
+    </div>
+  )
 }
 
 function Graph({ projects, openReview }: { projects: Project[]; openReview: () => void }) {
@@ -888,6 +1038,7 @@ export function App() {
     if (view === 'dashboard') return <Dashboard projects={projects} openInbox={(id) => { setProjectFilter(id); setView('inbox') }} setProjectActive={setProjectActive} />
     if (view === 'inbox') return <Inbox projects={projects} projectFilter={projectFilter} actions={actions} setActions={setActions} openReview={() => setView('review')} />
     if (view === 'queue') return <Queue projects={projects} openReview={() => setView('review')} />
+    if (view === 'schedule') return <Schedule />
     if (view === 'graph') return <Graph projects={projects} openReview={() => setView('review')} />
     if (view === 'review') return <Review back={() => setView('queue')} />
     return <SettingsView />

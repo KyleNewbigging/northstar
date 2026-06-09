@@ -4,13 +4,15 @@ import Fastify from 'fastify'
 
 import { dispatchAgent, getRun, listRuns, type DispatchRequest } from './agentRunner.js'
 import { getDb } from './database.js'
-import { readGraphifyGraph } from './graphify.js'
+import { ensureProjectGraph, ensureProjectGraphs, readGraphifyGraph } from './graphify.js'
 import { githubCatalogPath, loadGithubCatalog } from './github.js'
 import { databasePath, northstarHome } from './paths.js'
 import { buildProjectGraph, graphifyToPayload } from './projectGraph.js'
 import { appendProjectLearning, ensureProjectSkillsFile, readProjectSkills, summarizeProjectSkills } from './projectSkills.js'
 import { discoverProjects } from './projects.js'
 import type { ProjectAutomationState, LocalProject } from './projects.js'
+import { listOnboarding, seedProjectOnboarding } from './onboarding.js'
+import { getSchedulerSettings, updateSchedulerSettings, type SchedulerSettings } from './scheduler.js'
 import { isWhisperAvailable, transcribeWithWhisper } from './transcribe.js'
 
 const fastify = Fastify({ logger: true })
@@ -18,6 +20,7 @@ await fastify.register(cors, { origin: ['http://127.0.0.1:5173', 'http://localho
 await fastify.register(websocket)
 
 const db = getDb()
+const graphEnsureAttempts = new Set<string>()
 
 type InboxRow = {
   id: string
@@ -77,7 +80,16 @@ function loadAutomationState() {
 }
 
 function currentProjects() {
-  return discoverProjects(undefined, loadAutomationState())
+  const automation = loadAutomationState()
+  const projects = discoverProjects(undefined, automation)
+  const missingLocalGraphs = projects.filter((project) => project.localExists && !project.graphReady && !graphEnsureAttempts.has(project.id))
+  if (!missingLocalGraphs.length) return projects
+
+  ensureProjectGraphs(missingLocalGraphs).forEach((result, index) => {
+    graphEnsureAttempts.add(missingLocalGraphs[index].id)
+    if (!result.ok) fastify.log.warn({ project: missingLocalGraphs[index].id, result }, 'project graph generation skipped')
+  })
+  return discoverProjects(undefined, automation)
 }
 
 function listInboxActions() {
@@ -152,6 +164,12 @@ function seedNextAutonomyQuestion(project: LocalProject) {
 
 fastify.get('/api/health', async () => ({ ok: true, northstarHome, databasePath }))
 fastify.get('/api/projects', async () => ({ projects: currentProjects() }))
+fastify.get('/api/scheduler', async () => ({ scheduler: getSchedulerSettings(db) }))
+fastify.post('/api/scheduler', async (request) => {
+  return { ok: true, scheduler: updateSchedulerSettings(db, request.body as Partial<SchedulerSettings>) }
+})
+fastify.get('/api/onboarding', async () => ({ onboarding: listOnboarding(db) }))
+fastify.post('/api/onboarding/seed', async () => seedProjectOnboarding(db, currentProjects()))
 fastify.get('/api/github/repositories', async () => ({ source: githubCatalogPath, repositories: loadGithubCatalog() }))
 fastify.get('/api/projects/:id', async (request) => {
   const { id } = request.params as { id: string }
@@ -183,6 +201,7 @@ fastify.post('/api/projects/:id/refresh', async (request) => {
   const { id } = request.params as { id: string }
   const project = currentProjects().find((item) => item.id === id)
   if (!project) return { error: 'not_found' }
+  if (project.localExists) ensureProjectGraph(project, { force: true })
   const graph = readGraphifyGraph(project.path)
   return graph ? { status: 'graph_loaded', graph } : { status: 'graph_missing', expected: `${project.path}/graphify-out/graph.json` }
 })
@@ -218,7 +237,27 @@ fastify.post('/api/autonomy/tick', async () => {
   const seeded = target ? seedNextAutonomyQuestion(target) : null
   return { ok: true, seeded, projects: currentProjects(), actions: listInboxActions() }
 })
-fastify.get('/api/queue', async () => ({ tasks: db.prepare('SELECT * FROM tasks ORDER BY priority ASC').all() }))
+fastify.get('/api/queue', async () => ({
+  tasks: db.prepare(
+    `SELECT
+      id,
+      title,
+      project_id AS project,
+      model,
+      agent,
+      status,
+      priority,
+      progress,
+      eta,
+      stage,
+      files,
+      branch
+     FROM tasks
+     ORDER BY
+      CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
+      id ASC`,
+  ).all(),
+}))
 fastify.post('/api/queue/:id/pause', async (request) => ({ ok: true, id: (request.params as { id: string }).id, status: 'paused' }))
 fastify.post('/api/queue/:id/resume', async (request) => ({ ok: true, id: (request.params as { id: string }).id, status: 'resume-queued' }))
 fastify.get('/api/graph/:project', async (request) => {

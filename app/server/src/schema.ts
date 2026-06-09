@@ -85,4 +85,27 @@ CREATE TABLE IF NOT EXISTS usage (
   compute_pct INTEGER NOT NULL DEFAULT 0,
   background_slots_free INTEGER NOT NULL DEFAULT 0
 );
+
+CREATE TABLE IF NOT EXISTS scheduler_settings (
+  id TEXT PRIMARY KEY,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  timezone TEXT NOT NULL DEFAULT 'America/Toronto',
+  start_time TEXT NOT NULL DEFAULT '22:30',
+  end_time TEXT NOT NULL DEFAULT '06:30',
+  weekday_reserve_pct INTEGER NOT NULL DEFAULT 35,
+  max_parallel_runs INTEGER NOT NULL DEFAULT 2,
+  spark_enabled INTEGER NOT NULL DEFAULT 1,
+  opus_enabled INTEGER NOT NULL DEFAULT 1,
+  codex_enabled INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS project_onboarding (
+  project_id TEXT PRIMARY KEY,
+  profile TEXT NOT NULL,
+  goals_json TEXT NOT NULL,
+  queue_json TEXT NOT NULL,
+  skills_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
 `

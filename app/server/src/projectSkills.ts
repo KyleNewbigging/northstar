@@ -59,6 +59,20 @@ export function appendProjectLearning(project: LocalProject, note: string, sourc
   return summarizeProjectSkills(project)
 }
 
+export function upsertProjectOnboarding(project: LocalProject, markdown: string) {
+  ensureProjectSkillsFile(project)
+  const path = projectSkillsPath(project)
+  const start = '<!-- northstar:onboarding:start -->'
+  const end = '<!-- northstar:onboarding:end -->'
+  const block = `${start}\n${markdown.trim()}\n${end}`
+  const content = readFileSync(path, 'utf8')
+  const next = content.includes(start) && content.includes(end)
+    ? content.replace(new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`), block)
+    : `${content.trim()}\n\n${block}\n`
+  writeFileSync(path, next, 'utf8')
+  return summarizeProjectSkills(project)
+}
+
 export function extractLearningCandidates(text: string) {
   const notes = text
     .split('\n')
@@ -113,4 +127,8 @@ function normalizeLearningNote(note: string) {
     .replace(/^[-*]\s*/, '')
     .trim()
     .slice(0, 320)
+}
+
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }

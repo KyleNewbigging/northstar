@@ -2,6 +2,7 @@ import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join } from 'node:path'
 import { execFileSync } from 'node:child_process'
 
+import { readGraphStats } from './graphify.js'
 import { GithubRepoSummary, loadGithubCatalog, parseGithubRemote } from './github.js'
 import { defaultDevRoot } from './paths.js'
 import { summarizeProjectSkills, type ProjectSkillSummary } from './projectSkills.js'
@@ -93,8 +94,7 @@ function describeRepo(dir: string, index: number): LocalProject {
   const behindMatch = (git(dir, ['status', '--short', '--branch']) || '').match(/behind (\d+)/)
   const behind = behindMatch ? Number(behindMatch[1]) : 0
   const commits24 = Number(git(dir, ['rev-list', '--count', '--since=24 hours ago', 'HEAD']) || '0')
-  const graphPath = join(dir, 'graphify-out', 'graph.json')
-  const graphStats = readGraphStats(graphPath)
+  const graphStats = readGraphStats(dir)
   const lang = detectLanguage(dir)
   const dirtyFiles = statusLines.length
   const needsAttention = dirtyFiles > 0 || behind > 0
@@ -222,16 +222,6 @@ function detectLanguage(dir: string) {
   if (existsSync(join(dir, 'go.mod'))) return 'Go'
   if (existsSync(join(dir, 'pyproject.toml'))) return 'Python'
   return 'Repo'
-}
-
-function readGraphStats(path: string) {
-  if (!existsSync(path)) return { nodes: 0, communities: 0 }
-  try {
-    const graph = JSON.parse(readFileSync(path, 'utf8')) as { nodes?: unknown[]; communities?: unknown[] }
-    return { nodes: graph.nodes?.length ?? 0, communities: graph.communities?.length ?? 0 }
-  } catch {
-    return { nodes: 0, communities: 0 }
-  }
 }
 
 function inferLabel(name: string, remote: string): 'work' | 'personal' {

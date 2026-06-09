@@ -149,6 +149,38 @@
 .answered-log { font-size: 11px; color: var(--ink-3); display: flex; align-items: center; gap: 6px; padding: 6px 2px; }
 .answered-log .mono { color: var(--ink-2); }
 
+/* ---------------- SCHEDULE ---------------- */
+.schedule-grid { display: grid; grid-template-columns: minmax(420px, 560px) 1fr; gap: 14px; height: 100%; }
+.schedule-main, .schedule-side { min-height: 0; overflow: hidden; }
+.schedule-form { display: flex; flex-direction: column; gap: 9px; padding: 14px; }
+.field-row {
+  min-height: 44px; display: grid; grid-template-columns: 140px 1fr auto; gap: 10px; align-items: center;
+  color: var(--ink-2); font-size: 12px; border-bottom: 1px solid var(--line-soft); padding: 5px 0;
+}
+.field-row:last-child { border-bottom: none; }
+.field-row span { font-family: var(--mono); color: var(--ink-3); font-size: 11px; text-transform: uppercase; }
+.field-row input[type="text"], .field-row input:not([type]), .field-row input[type="time"], .field-row input[type="number"] {
+  min-height: 34px; background: var(--panel-2); border: 1px solid var(--line);
+  border-radius: var(--r-sm); color: var(--ink); padding: 0 10px; font-family: var(--mono);
+}
+.field-row input[type="checkbox"] { width: 20px; height: 20px; accent-color: var(--star); justify-self: start; }
+.field-row input[type="range"] { width: 100%; accent-color: var(--star); }
+.field-row b { color: var(--star); font-family: var(--mono); font-size: 11px; }
+.model-toggles { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; padding-top: 6px; }
+.toggle-pill {
+  min-height: 44px; display: flex; align-items: center; justify-content: center; gap: 7px;
+  background: var(--panel-2); border: 1px solid var(--line); border-radius: var(--r-md);
+  color: var(--ink-2); cursor: pointer; font-size: 11px;
+}
+.toggle-pill.on { color: var(--star); border-color: var(--star-dim); background: oklch(0.21 0.03 75 / 0.28); }
+.schedule-actions { padding: 0 14px 14px; min-height: 48px; }
+.onboard-row {
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  border-bottom: 1px solid var(--line-soft);
+}
+.onboard-row p { margin: 0; color: var(--ink-2); font-size: 12px; line-height: 1.35; }
+.tag.dim { color: var(--ink-4); }
+
 /* telemetry feed */
 .feed-row {
   display: flex; gap: 9px; padding: 8px 10px; align-items: flex-start;

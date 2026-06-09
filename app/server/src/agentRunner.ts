@@ -128,7 +128,8 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
     const message = error instanceof Error ? error.message : 'Unable to create agent worktree.'
     return { ok: false, error: message }
   }
-  const command = buildRunnerCommand(model, prompt, project, worktreePath, runId)
+  const scopeContext = buildScopeContext(projects, request.projectContext, project)
+  const command = buildRunnerCommand(model, prompt, project, worktreePath, runId, scopeContext)
 
   ensureProjectRow(db, project)
   db.prepare(
@@ -250,13 +251,13 @@ function prepareWorktree(repoPath: string, projectId: string, taskId: string) {
   return worktreePath
 }
 
-function buildRunnerCommand(model: DispatchModel, prompt: string, project: LocalProject, worktreePath: string, runId: string): RunnerCommand {
-  if (model === 'opus') return buildClaudeCommand(prompt, project, worktreePath)
-  return buildCodexCommand(model, prompt, project, worktreePath, runId)
+function buildRunnerCommand(model: DispatchModel, prompt: string, project: LocalProject, worktreePath: string, runId: string, scopeContext: string): RunnerCommand {
+  if (model === 'opus') return buildClaudeCommand(prompt, project, worktreePath, scopeContext)
+  return buildCodexCommand(model, prompt, project, worktreePath, runId, scopeContext)
 }
 
-function buildClaudeCommand(prompt: string, project: LocalProject, worktreePath: string): RunnerCommand {
-  const fullPrompt = buildPromptEnvelope(prompt, project, 'Use plan mode only. Do not edit files. Do not run destructive commands.')
+function buildClaudeCommand(prompt: string, project: LocalProject, worktreePath: string, scopeContext: string): RunnerCommand {
+  const fullPrompt = buildPromptEnvelope(prompt, project, 'Use plan mode only. Do not edit files. Do not run destructive commands.', scopeContext)
   const args = [
     '--print',
     '--output-format',
@@ -277,14 +278,14 @@ function buildClaudeCommand(prompt: string, project: LocalProject, worktreePath:
   }
 }
 
-function buildCodexCommand(model: Exclude<DispatchModel, 'opus'>, prompt: string, project: LocalProject, worktreePath: string, runId: string): RunnerCommand {
+function buildCodexCommand(model: Exclude<DispatchModel, 'opus'>, prompt: string, project: LocalProject, worktreePath: string, runId: string, scopeContext: string): RunnerCommand {
   const codexModel = model === 'spark' ? codexSparkModel : codexReservedModel
   const finalTextPath = join(logRoot, `${runId}.final.txt`)
   const policy =
     model === 'spark'
       ? 'Use read-only mode. Be fast and concrete. Do not modify files; return the next safest implementation plan, blockers, and any question needed from Kyle.'
       : 'Use read-only mode. This is the reserved GPT-5.5 lane for high-value manual work. Do not modify files; return a careful plan, risks, and exact next steps.'
-  const fullPrompt = buildPromptEnvelope(prompt, project, policy)
+  const fullPrompt = buildPromptEnvelope(prompt, project, policy, scopeContext)
   const args = [
     '--ask-for-approval',
     'never',
@@ -310,12 +311,13 @@ function buildCodexCommand(model: Exclude<DispatchModel, 'opus'>, prompt: string
   }
 }
 
-function buildPromptEnvelope(prompt: string, project: LocalProject, policy: string) {
+function buildPromptEnvelope(prompt: string, project: LocalProject, policy: string, scopeContext: string) {
   const skills = readProjectSkills(project)
   return [
     `You are running inside Northstar for project ${project.name}.`,
     `Project skills file: ${project.skillsPath}`,
     policy,
+    scopeContext,
     'Use the project skills below as durable local context. If you discover a durable project-specific lesson, include a line starting with "Learning candidate:" in the final plan; Northstar will review and store it in the project skills file.',
     'Return concise output that Northstar can show in a queue card: result, blockers, and the next question if you need more context.',
     skills ? `\nCurrent project skills:\n${skills}` : '',
@@ -392,8 +394,36 @@ function modelLabel(model: DispatchModel) {
 }
 
 function pickProject(projects: LocalProject[], projectContext?: string) {
-  if (projectContext && projectContext !== 'active') return projects.find((project) => project.id === projectContext)
+  if (projectContext && projectContext !== 'active' && projectContext !== 'all') return projects.find((project) => project.id === projectContext)
+  if (projectContext === 'all') return projects.find((project) => project.id === 'northstar' && project.localExists) ?? projects.find((project) => project.localExists)
   return projects.find((project) => project.active && project.localExists) ?? projects.find((project) => project.id === 'northstar') ?? projects.find((project) => project.localExists)
+}
+
+function buildScopeContext(projects: LocalProject[], projectContext: string | undefined, dispatchProject: LocalProject) {
+  if (projectContext === 'all') {
+    const projectLines = projects.slice(0, 60).map(formatProjectScopeLine)
+    const omitted = projects.length > projectLines.length ? `\n- ...${projects.length - projectLines.length} more projects omitted from this prompt.` : ''
+    return [
+      'Command scope: all known projects, including GitHub-linked projects. Use this as a broad search and activation-advice context.',
+      `Dispatch worktree: ${dispatchProject.name}. Do not assume this is the only target project.`,
+      'Known project inventory:',
+      `${projectLines.join('\n')}${omitted}`,
+    ].join('\n')
+  }
+
+  if (projectContext === 'active' || !projectContext) {
+    const activeProjects = projects.filter((project) => project.active)
+    if (!activeProjects.length) return `Command scope: active projects. No active projects are currently marked, so dispatch is running from ${dispatchProject.name}.`
+    return ['Command scope: active projects.', ...activeProjects.map(formatProjectScopeLine)].join('\n')
+  }
+
+  return `Command scope: selected project ${dispatchProject.name} (${dispatchProject.id}).`
+}
+
+function formatProjectScopeLine(project: LocalProject) {
+  const source = project.github ? `github:${project.github.fullName}` : project.localExists ? `local:${project.path}` : 'github-only'
+  const state = project.active ? 'active' : 'inactive'
+  return `- ${project.name} (${project.id}) ${state}; ${source}; status:${project.status}; branch:${project.branch}`
 }
 
 function ensureProjectRow(db: DatabaseSync, project: LocalProject) {
