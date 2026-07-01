@@ -204,6 +204,15 @@ function runMigrations(database: DatabaseSync) {
   ensureColumn(database, 'patches', 'files_changed', 'ALTER TABLE patches ADD COLUMN files_changed INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'patches', 'created_at', 'ALTER TABLE patches ADD COLUMN created_at TEXT')
   ensureColumn(database, 'patches', 'updated_at', 'ALTER TABLE patches ADD COLUMN updated_at TEXT')
+  database.prepare(
+    `DELETE FROM patches
+     WHERE rowid NOT IN (
+       SELECT MAX(rowid)
+       FROM patches
+       GROUP BY task_id
+     )`,
+  ).run()
+  database.prepare('CREATE UNIQUE INDEX IF NOT EXISTS patches_task_id_unique ON patches(task_id)').run()
   database.prepare('UPDATE agent_runs SET updated_at = COALESCE(updated_at, started_at, CURRENT_TIMESTAMP)').run()
   database.prepare('UPDATE tasks SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)').run()
   database.prepare('UPDATE tasks SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)').run()

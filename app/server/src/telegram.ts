@@ -242,7 +242,7 @@ type TelegramPromptInput = {
 }
 
 type TelegramPromptResult =
-  | { ok: true; taskId: string; actionId?: string | null; project: string; model: string; status?: string; autoDispatched?: boolean; dispatch?: BridgeRunTaskResult }
+  | { ok: true; taskId: string; actionId?: string | null; project: string; model: string; status?: string; autoDispatched?: boolean; dispatch?: BridgeRunTaskResult; lane?: TelegramUseLane; laneWarning?: string | null }
   | { ok: false; error: string }
 
 type TelegramApiResponse<T> = {
@@ -302,6 +302,13 @@ export type TelegramSession = {
 }
 
 type TelegramUseLane = 'orchestrator' | 'personal'
+
+export type NaturalTelegramRoute = {
+  project: string
+  model: string
+  agent: string
+  reason: string
+}
 
 type TelegramSessionRow = {
   chat_id: string
@@ -1400,6 +1407,9 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       return
     }
 
+    const naturalResolution = await handleNaturalLanguageResolution(token, settings, text)
+    if (naturalResolution) return
+
     await handleNaturalLanguagePrompt(token, settings, scope, message, text)
   }
 
@@ -1428,6 +1438,20 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
     await sendMessage(token, settings.chatId, buildResolveResultMessage(resolved))
   }
 
+  async function handleNaturalLanguageResolution(token: string, settings: TelegramBridgeSettings, text: string) {
+    const resolution = parseNaturalLanguageResolution(text, options.getSnapshot().actions)
+    if (!resolution) return false
+
+    if (!resolution.ok) {
+      await sendMessage(token, settings.chatId, resolution.message)
+      return true
+    }
+
+    const resolved = options.resolveInboxAction(resolution.action.id, resolution.choice)
+    await sendMessage(token, settings.chatId, buildNaturalResolveResultMessage(resolution.action, resolution.choiceLabel, resolved))
+    return true
+  }
+
   async function handleNaturalLanguagePrompt(
     token: string,
     settings: TelegramBridgeSettings,
@@ -1435,11 +1459,23 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
     message: TelegramMessage,
     text: string,
   ) {
-    const session = getTelegramSession(db, scope.chatId, scope.threadId)
+    let session = getTelegramSession(db, scope.chatId, scope.threadId)
     if (!session) {
       const chatSessions = listTelegramSessions(db).filter((item) => item.chatId === scope.chatId)
-      await sendMessage(token, settings.chatId, buildNoSessionMessage(scope, chatSessions))
-      return
+      const route = inferNaturalTelegramRoute(text, chatSessions)
+      if (!route) {
+        await sendMessage(token, settings.chatId, buildNoSessionMessage(scope, chatSessions))
+        return
+      }
+      const workspace = requireFileActions().ensureProjectWorkspace({ project: route.project })
+      session = upsertTelegramSession(db, {
+        chatId: scope.chatId,
+        threadId: scope.threadId,
+        project: workspace.ok ? workspace.project : route.project,
+        model: route.model,
+        agent: route.agent,
+        cwd: workspace.ok ? workspace.relPath : `projects/${route.project}`,
+      })
     }
 
     if (!options.queuePrompt) {
@@ -2256,6 +2292,163 @@ function resolveFromCommand(text: string) {
   return { ok: true as const, id, choice }
 }
 
+export function parseNaturalLanguageResolution(text: string, actions: BridgeInboxAction[]) {
+  const normalized = normalizeReplyText(text)
+  if (!normalized || normalized.length > 80 || isCommandText(text)) return null
+
+  const action = actions.filter(isBridgeInboxAction).sort(compareInboxActions)[0]
+  if (!action) return null
+
+  const directChoice = naturalChoiceForText(normalized, action)
+  if (!directChoice) return null
+  if (!directChoice.ok) {
+    return {
+      ok: false as const,
+      message: [
+        'Polaris can do that, but I need one clear choice.',
+        `Current item: ${action.title}`,
+        naturalChoiceHelp(action),
+      ].join('\n'),
+    }
+  }
+  return { ok: true as const, action, choice: directChoice.choice, choiceLabel: directChoice.label }
+}
+
+function naturalChoiceForText(normalized: string, action: BridgeInboxAction) {
+  const options = action.options ?? []
+  const recommendedIndex = typeof action.recommend === 'number' && action.recommend >= 0 && action.recommend < options.length
+    ? action.recommend
+    : 0
+
+  const numeric = parseNaturalChoiceNumber(normalized)
+  if (numeric !== null) {
+    if (!options.length) return { ok: true as const, choice: normalized, label: normalized }
+    const option = options[numeric - 1]
+    return option
+      ? { ok: true as const, choice: String(numeric), label: option }
+      : { ok: false as const }
+  }
+
+  const optionIndex = options.findIndex((option) => normalizedMatchesOption(normalized, option))
+  if (optionIndex >= 0) return { ok: true as const, choice: String(optionIndex + 1), label: options[optionIndex] }
+
+  if (isDiscardReply(normalized)) {
+    const discardIndex = options.findIndex((option) => /discard|cancel|stop/i.test(option))
+    if (discardIndex >= 0) return { ok: true as const, choice: String(discardIndex + 1), label: options[discardIndex] }
+    return { ok: true as const, choice: 'discard', label: 'discard' }
+  }
+
+  if (isApprovalReply(normalized)) {
+    if (!options.length) return { ok: true as const, choice: 'noted', label: 'noted' }
+    return { ok: true as const, choice: String(recommendedIndex + 1), label: options[recommendedIndex] }
+  }
+
+  return null
+}
+
+function parseNaturalChoiceNumber(value: string) {
+  const match = value.match(/^(?:option\s*)?([1-6])$/) ?? value.match(/^(first|second|third|fourth|fifth|sixth)(?:\s+option)?$/)
+  if (!match) return null
+  const wordMap: Record<string, number> = { first: 1, second: 2, third: 3, fourth: 4, fifth: 5, sixth: 6 }
+  const raw = match[1]
+  return /^\d+$/.test(raw) ? Number(raw) : wordMap[raw] ?? null
+}
+
+function normalizedMatchesOption(normalized: string, option: string) {
+  const optionText = normalizeReplyText(option)
+  if (!optionText) return false
+  if (normalized === optionText) return true
+  if (optionText.includes(normalized) && normalized.length >= 4) return true
+  if (normalized.includes(optionText) && optionText.length >= 4) return true
+  const keywords = optionText.split(/\s+/).filter((word) => word.length >= 5)
+  return keywords.length > 0 && keywords.every((word) => normalized.includes(word))
+}
+
+function isApprovalReply(value: string) {
+  return /^(yes|y|yeah|yep|ok|okay|sure|approved|approve|go ahead|do it|do this|run it|proceed|continue|sounds good|recommended|use recommended|do recommended|push the button)$/.test(value)
+}
+
+function isDiscardReply(value: string) {
+  return /^(no|nope|discard|cancel|stop|skip|drop it|ignore it)$/.test(value)
+}
+
+export function inferNaturalTelegramRoute(text: string, existingSessions: TelegramSession[] = []): NaturalTelegramRoute {
+  const normalized = normalizeReplyText(text)
+  const project = inferNaturalProject(normalized, existingSessions)
+  const lane = inferNaturalLane(normalized)
+  return {
+    project,
+    model: lane === 'personal' ? 'spark' : defaultTelegramModel,
+    agent: lane,
+    reason: normalized.includes('zebra') ? 'matched Zebra dashboard wording' : normalized.includes('northstar') ? 'matched Northstar wording' : 'default orchestrator route',
+  }
+}
+
+function inferNaturalProject(normalized: string, existingSessions: TelegramSession[]) {
+  const explicit = projectFromText(normalized)
+  if (explicit) return explicit
+
+  const existingOrchestrator = existingSessions.find((session) => inferTelegramLane(session) === 'orchestrator')
+  if (existingOrchestrator?.project) return existingOrchestrator.project
+
+  const existing = existingSessions[0]
+  if (existing?.project) return existing.project
+
+  return 'northstar'
+}
+
+function projectFromText(normalized: string) {
+  if (/(^|\s)(zebra|zebra-dashboard|dashboard)(\s|$)/.test(normalized)) return 'zebra-dashboard'
+  if (/(^|\s)(northstar|polaris)(\s|$)/.test(normalized)) return 'northstar'
+  return null
+}
+
+function inferNaturalLane(normalized: string): TelegramUseLane {
+  if (/(^|\s)(personal|spark|quick|lightweight)(\s|$)/.test(normalized)) return 'personal'
+  return 'orchestrator'
+}
+
+function normalizeReplyText(value: string) {
+  return value
+    .trim()
+    .toLowerCase()
+    .replace(/[“”]/g, '"')
+    .replace(/[’]/g, "'")
+    .replace(/[^a-z0-9\s'-]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
+function compareInboxActions(a: BridgeInboxAction, b: BridgeInboxAction) {
+  const priority = priorityRank(a.priority) - priorityRank(b.priority)
+  if (priority !== 0) return priority
+  const urgency = urgencyRank(a.urgency) - urgencyRank(b.urgency)
+  if (urgency !== 0) return urgency
+  return a.id.localeCompare(b.id)
+}
+
+function priorityRank(priority: BridgePriority) {
+  if (priority === 'P0') return 0
+  if (priority === 'P1') return 1
+  if (priority === 'P2') return 2
+  return 3
+}
+
+function urgencyRank(urgency: BridgeInboxAction['urgency']) {
+  if (urgency === 'high') return 0
+  if (urgency === 'med') return 1
+  return 2
+}
+
+function naturalChoiceHelp(action: BridgeInboxAction) {
+  if (!action.options?.length) return 'Reply "noted" or use /inbox for details.'
+  const labels = action.options.map((option, index) => `${index + 1}. ${option}`).join('\n')
+  return [
+    'Reply with a number, an option word, or tap a button:',
+    labels,
+  ].join('\n')
+}
+
 function parseResolveCallback(value: string) {
   const [kind, id = '', choice = ''] = value.split(':')
   if (kind !== 'resolve' || !id || !choice) return { ok: false as const }
@@ -2277,6 +2470,9 @@ function isCommandText(text: string) {
 }
 
 function buildInboxMessage(action: BridgeInboxAction) {
+  const recommendedIndex = typeof action.recommend === 'number' && action.recommend >= 0 && action.options?.[action.recommend]
+    ? action.recommend
+    : 0
   const lines = [
     action.urgency === 'high'
       ? 'Polaris needs your input'
@@ -2292,9 +2488,13 @@ function buildInboxMessage(action: BridgeInboxAction) {
       const recommended = action.recommend === index ? ' (recommended)' : ''
       lines.push(`${index + 1}. ${option}${recommended}`)
     })
-    lines.push('', `Tap a button, or reply /resolve ${action.id} 1.`)
+    lines.push(
+      '',
+      `Tap a button, reply "yes" for ${action.options[recommendedIndex]}, or reply "first", "second", or "discard".`,
+      `Fallback command: /resolve ${action.id} ${recommendedIndex + 1}`,
+    )
   } else {
-    lines.push('', `Reply: /resolve ${action.id} noted`)
+    lines.push('', 'Reply "noted" or "yes".', `Fallback command: /resolve ${action.id} noted`)
   }
   if (action.help) lines.push('', clip(action.help, 800))
   return lines.join('\n')
@@ -2342,11 +2542,25 @@ function buildResolveResultMessage(result: BridgeResolveResult) {
   return `Resolved ${result.id}: ${result.choice || 'noted'}`
 }
 
+function buildNaturalResolveResultMessage(action: BridgeInboxAction, choiceLabel: string, result: BridgeResolveResult) {
+  if (!result.ok) return `Polaris could not apply that reply to ${action.title}: ${result.error ?? 'unknown error'}`
+  return [
+    `Done: ${choiceLabel || result.choice || 'noted'}`,
+    action.title,
+    result.taskResolution?.status ? `Task status: ${result.taskResolution.status}` : null,
+  ].filter((line): line is string => line !== null).join('\n')
+}
+
 function buildInboxDigest(actions: BridgeInboxAction[]) {
   if (!actions.length) return 'Northstar inbox is clear.'
-  const lines = ['Northstar inbox']
-  for (const action of actions.slice(0, 8)) {
-    lines.push(`${action.priority} ${action.id}: ${action.title}`)
+  const sorted = actions.slice().sort(compareInboxActions)
+  const lines = [
+    'Northstar inbox',
+    'Reply "yes" to accept the top recommended choice, or reply "first", "second", or "discard".',
+  ]
+  for (const action of sorted.slice(0, 8)) {
+    const recommended = action.options?.[typeof action.recommend === 'number' ? action.recommend : 0]
+    lines.push(`${action.priority}: ${action.title}${recommended ? ` · recommended: ${recommended}` : ''}`)
   }
   if (actions.length > 8) lines.push(`${actions.length - 8} more in the cockpit.`)
   return lines.join('\n')
@@ -2408,7 +2622,10 @@ function buildNextMessage(overview: BridgeOperationsOverview) {
     next.priority ? `Priority: ${next.priority}` : null,
     '',
     next.reason ?? 'Northstar recommends this as the smallest useful next step.',
-    `Command: ${next.command ?? '/overview'}`,
+    next.kind === 'resolve-inbox'
+      ? 'Reply "yes" to approve the recommended choice, or use /inbox for the options.'
+      : `Command: ${next.command ?? '/overview'}`,
+    next.command ? `Fallback command: ${next.command}` : null,
   ].filter((line): line is string => line !== null).join('\n')
 }
 
@@ -2599,13 +2816,14 @@ function buildSessionMessage(session: TelegramSession, createdCount: number) {
 function buildNoSessionMessage(scope: ReturnType<typeof telegramSessionScope>, sessions: TelegramSession[]) {
   const topicLabel = `${scope.chatId}/${scope.threadId}`
   const examples = [
-    'orchestrator: /use PROJECT codex orchestrator',
-    'personal: /use PROJECT spark personal',
+    'Send "work on Northstar" for the Northstar orchestrator lane.',
+    'Send "work on Zebra dashboard" for the Zebra dashboard orchestrator lane.',
+    'Mention "personal" or "Spark" only when you want the lighter personal lane.',
   ]
   if (!sessions.length) {
     return [
       `No Telegram project session is bound to this chat/topic (${topicLabel}) yet.`,
-      'Run /use PROJECT [model] [agent] first, then send the request again.',
+      'Send a normal request that mentions Northstar or Zebra dashboard and Polaris will route it automatically.',
       ...examples.map((line) => `  ${line}`),
       'No agent process has started.',
     ].join('\n')
@@ -2615,7 +2833,7 @@ function buildNoSessionMessage(scope: ReturnType<typeof telegramSessionScope>, s
     'Known routes on this chat:',
     ...sessions.map((session) => `  ${formatSessionRouteSummary(session)}`),
     '',
-    'Bind this topic with the lane you want:',
+    'Send a normal request for the project you want:',
     ...examples.map((line) => `  ${line}`),
     'No agent process has started.',
   ].join('\n')
@@ -2845,6 +3063,7 @@ function helpText() {
     '/debug off - return to quiet important-only notifications',
     '',
     'After /use binds a chat/topic, ordinary messages queue and start Codex worktree tasks automatically when local guardrails pass.',
+    'Without /use, a first normal message auto-routes to Northstar or Zebra dashboard; Orchestrator is the default lane.',
     'Telegram can resolve inbox decisions and reference Dropbox files. Patch apply, commits, pushes, deletes, and blocked/risky actions stay in the local cockpit.',
   ].join('\n')
 }

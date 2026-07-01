@@ -45,6 +45,7 @@ async function main() {
   const freshSchema = runFreshTaskSchemaSmoke()
   const telegramIntake = await runTelegramIntakeSmoke()
   const telegramQuietNotifications = await runTelegramQuietNotificationSmoke()
+  const telegramNaturalReplies = runTelegramNaturalReplySmoke()
   const telegramNoSession = await runTelegramNoSessionIntakeSmoke()
   const telegramDocIntake = await runTelegramDocumentIntakeSmoke()
   const attentionAlerts = await runAttentionAlertSmoke()
@@ -90,6 +91,7 @@ async function main() {
     freshSchema,
     telegramIntake,
     telegramQuietNotifications,
+    telegramNaturalReplies,
     telegramNoSession,
     telegramDocIntake,
     attentionAlerts,
@@ -522,6 +524,42 @@ async function runTelegramNoSessionIntakeSmoke() {
   assert(typeof noSession.errorMessage === 'string' && noSession.errorMessage.includes('No Telegram project session'), 'Telegram no-session guidance was not returned')
   assert(noSession.sessionCount === 0, 'Telegram no-session response session count should be zero')
   return { ok: true, status: noSession.error }
+}
+
+function runTelegramNaturalReplySmoke() {
+  const script = `
+    const mod = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'app/server/src/telegram.ts')).href)});
+    const actions = [
+      {
+        id: 'SMOKE-ACTION-1',
+        type: 'question',
+        project: 'northstar',
+        task: 'SMOKE-TASK-1',
+        model: 'codex',
+        priority: 'P1',
+        urgency: 'high',
+        title: 'Smoke natural reply',
+        ctx: 'Choose a path.',
+        options: ['Do the recommended thing', 'Use the second path', 'Discard'],
+        recommend: 0,
+      },
+    ];
+    const yes = mod.parseNaturalLanguageResolution('yes', actions);
+    const second = mod.parseNaturalLanguageResolution('second option', actions);
+    const discard = mod.parseNaturalLanguageResolution('discard', actions);
+    const longPrompt = mod.parseNaturalLanguageResolution('yes and also can you build a completely separate new dashboard feature for me right now please', actions);
+    if (!yes?.ok || yes.choice !== '1') throw new Error('yes should choose the recommended first option');
+    if (!second?.ok || second.choice !== '2') throw new Error('second option should choose option 2');
+    if (!discard?.ok || discard.choice !== '3') throw new Error('discard should choose the discard option');
+    if (longPrompt !== null) throw new Error('long prompts should not be swallowed as inbox resolutions');
+  `
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env: process.env,
+  })
+  assert(result.status === 0, `Telegram natural reply smoke failed: ${result.stderr || result.stdout}`)
+  return { ok: true, yes: 'recommended', second: true, discard: true }
 }
 
 async function runTelegramDocumentIntakeSmoke() {
