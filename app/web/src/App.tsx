@@ -2368,7 +2368,7 @@ const fallbackScheduler: SchedulerSettings = {
   maxParallelRuns: 2,
   sparkEnabled: true,
   opusEnabled: true,
-  codexEnabled: false,
+  codexEnabled: true,
   updatedAt: '',
 }
 
@@ -2456,7 +2456,7 @@ function Schedule() {
             <div className="model-toggles">
               <button type="button" className={`toggle-pill${scheduler.sparkEnabled ? ' on' : ''}`} onClick={() => setBoolean('sparkEnabled', !scheduler.sparkEnabled)}><ModelChip id="spark" small />Background</button>
               <button type="button" className={`toggle-pill${scheduler.opusEnabled ? ' on' : ''}`} onClick={() => setBoolean('opusEnabled', !scheduler.opusEnabled)}><ModelChip id="opus" small />Planning</button>
-              <button type="button" className={`toggle-pill${scheduler.codexEnabled ? ' on' : ''}`} onClick={() => setBoolean('codexEnabled', !scheduler.codexEnabled)}><ModelChip id="codex" small />Reserved</button>
+              <button type="button" className={`toggle-pill${scheduler.codexEnabled ? ' on' : ''}`} onClick={() => setBoolean('codexEnabled', !scheduler.codexEnabled)}><ModelChip id="codex" small />Primary</button>
             </div>
           </div>
           <div className="row gap8 schedule-actions"><button className="btn btn-primary" onClick={save} disabled={saving}>{saving ? 'Saving' : 'Save schedule'}</button><button className="btn" onClick={seed} disabled={seeding}>{seeding ? 'Indexing' : 'Seed onboarding'}</button><button className="btn" onClick={runTick} disabled={ticking}><Play size={13} />{ticking ? 'Ticking' : 'Run tick'}</button><span className="mono" style={{ color: 'var(--ink-3)', fontSize: 11 }}>{message || scheduler.updatedAt}</span></div>

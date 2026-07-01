@@ -34,7 +34,7 @@ function runMigrations(database: DatabaseSync) {
       max_parallel_runs INTEGER NOT NULL DEFAULT 2,
       spark_enabled INTEGER NOT NULL DEFAULT 1,
       opus_enabled INTEGER NOT NULL DEFAULT 1,
-      codex_enabled INTEGER NOT NULL DEFAULT 0,
+      codex_enabled INTEGER NOT NULL DEFAULT 1,
       updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
 

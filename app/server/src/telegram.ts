@@ -238,10 +238,11 @@ type TelegramPromptInput = {
   text: string
   session: TelegramSession
   messageId: number
+  autoDispatch?: boolean
 }
 
 type TelegramPromptResult =
-  | { ok: true; taskId: string; actionId: string; project: string; model: string }
+  | { ok: true; taskId: string; actionId?: string | null; project: string; model: string; status?: string; autoDispatched?: boolean; dispatch?: BridgeRunTaskResult }
   | { ok: false; error: string }
 
 type TelegramApiResponse<T> = {
@@ -1446,7 +1447,7 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       return
     }
 
-    const result = options.queuePrompt({ text, session, messageId: message.message_id })
+    const result = options.queuePrompt({ text, session, messageId: message.message_id, autoDispatch: true })
     await sendMessage(token, settings.chatId, buildPromptIntakeMessage(result, session))
   }
 
@@ -2591,7 +2592,7 @@ function buildSessionMessage(session: TelegramSession, createdCount: number) {
     `Scope: ${session.chatId}/${session.threadId}`,
     ...(warning ? ['', warning] : []),
     createdCount ? `Workspace created or extended with ${createdCount} item${createdCount === 1 ? '' : 's'}.` : 'Workspace already existed.',
-    'Ordinary messages now create review-gated Inbox work. No agent process starts until you resolve it.',
+    'Ordinary messages now start Codex worktree tasks automatically. Polaris will ask only when input, a blocker, or a risky action needs you.',
   ].join('\n')
 }
 
@@ -2630,23 +2631,20 @@ function buildPromptIntakeMessage(result: TelegramPromptResult, session: Telegra
   }
 
   return [
-    'Polaris captured this as review-gated work.',
+    result.dispatch?.ok
+      ? 'Polaris started a Codex worktree run.'
+      : result.autoDispatched
+        ? 'Polaris queued this for Codex, but it could not start yet.'
+        : 'Polaris queued this for Codex.',
     `Project: ${result.project || session.project}`,
+    `Status: ${result.dispatch?.ok ? 'running' : result.status ?? 'queued'}`,
     '',
-    'No agent has started yet. Tap one of the decision buttons when Polaris asks how to route it.',
-    buildPromptResolveHint(result.actionId, result.model),
+    result.dispatch?.ok
+      ? 'I will message only if it needs input, blocks, fails, or finishes.'
+      : result.dispatch?.error
+        ? `Reason: ${result.dispatch.error}`
+        : 'Use /overview if you want details.',
   ].join('\n')
-}
-
-function buildPromptResolveHint(actionId: string, model: string) {
-  const normalized = model.toLowerCase()
-  const choices =
-    normalized === 'codex'
-      ? ['queue Codex worktree', 'queue Claude plan', 'discard']
-      : normalized === 'opus' || normalized === 'claude'
-        ? ['queue Claude plan', 'queue Spark worktree', 'discard']
-        : ['queue Spark worktree', 'queue Claude plan', 'discard']
-  return `If buttons are unavailable: /resolve ${actionId} 1 for ${choices[0]}, /resolve ${actionId} 2 for ${choices[1]}, or /resolve ${actionId} 3 for ${choices[2]}.`
 }
 
 function buildSessionsMessage(sessions: TelegramSession[]) {
@@ -2846,8 +2844,8 @@ function helpText() {
     '/debug on 30m - temporarily enable verbose lifecycle and run telemetry',
     '/debug off - return to quiet important-only notifications',
     '',
-    'After /use binds a chat/topic, ordinary messages are captured as review-gated work. No agent process starts until the Inbox item is resolved.',
-    'Telegram can resolve inbox decisions and reference Dropbox files. Patch apply, commits, pushes, deletes, and reserved model dispatch stay in the local cockpit.',
+    'After /use binds a chat/topic, ordinary messages queue and start Codex worktree tasks automatically when local guardrails pass.',
+    'Telegram can resolve inbox decisions and reference Dropbox files. Patch apply, commits, pushes, deletes, and blocked/risky actions stay in the local cockpit.',
   ].join('\n')
 }
 

@@ -369,9 +369,6 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
   const model = request.model ?? 'opus'
   const prompt = request.prompt?.trim()
   if (!prompt) return { ok: false, error: 'Prompt is required before dispatch.' }
-  if (model === 'codex' && request.manualApproval !== true) {
-    return { ok: false, blocked: true, error: 'Manual approval is required before dispatching reserved Codex GPT-5.5. Retry with manualApproval: true.' }
-  }
 
   const guardrails = checkNoApiGuardrails(model)
   if (!guardrails.ok) return { ok: false, blocked: true, error: 'Strict no-API guardrails blocked dispatch.', guardrails }
@@ -426,8 +423,8 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
        eta = excluded.eta,
        stage = excluded.stage,
        branch = excluded.branch,
-       source = excluded.source,
-       source_ref = excluded.source_ref,
+       source = CASE WHEN tasks.source != 'cockpit' THEN tasks.source ELSE excluded.source END,
+       source_ref = CASE WHEN tasks.source_ref != '' THEN tasks.source_ref ELSE excluded.source_ref END,
        prompt = excluded.prompt,
        updated_at = CURRENT_TIMESTAMP,
        completed_at = NULL`,

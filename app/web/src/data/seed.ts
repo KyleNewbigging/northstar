@@ -3,7 +3,7 @@ import type { GraphEdge, GraphNode, HealthProfile, InboxAction, ModelInfo, Patch
 export const models: ModelInfo[] = [
   { id: 'opus', label: 'Claude Code', vendor: 'Anthropic', tier: 'planning/review', auth: 'claude.ai subscription' },
   { id: 'spark', label: 'Codex Spark', vendor: 'OpenAI', tier: 'background', auth: 'ChatGPT Pro subscription' },
-  { id: 'codex', label: 'Codex GPT-5.5', vendor: 'OpenAI', tier: 'reserved/manual', auth: 'ChatGPT subscription', reserved: true },
+  { id: 'codex', label: 'Codex GPT-5.5', vendor: 'OpenAI', tier: 'primary worktree', auth: 'ChatGPT subscription', reserved: false },
 ]
 
 export const fallbackProjects: Project[] = [

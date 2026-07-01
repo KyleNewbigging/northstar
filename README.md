@@ -121,7 +121,7 @@ You can keep classic polling with:
 NORTHSTAR_TELEGRAM_BRIDGE_IMPL=poll
 ```
 
-After `/use PROJECT [model] [agent]` binds a chat or topic, ordinary non-command Telegram messages are captured as review-gated Inbox work. If model and agent are omitted, Northstar defaults to `codex orchestrator`; override that with `NORTHSTAR_TELEGRAM_DEFAULT_MODEL` and `NORTHSTAR_TELEGRAM_DEFAULT_AGENT`. Northstar creates a `needs-input` queue task and route-aware Inbox choices: a Codex route offers Codex worktree, Claude plan, or discard; a Spark route offers Spark worktree, Claude plan, or discard; a Claude route offers Claude plan, Spark worktree, or discard. Telegram notifications include inline resolve buttons plus `/resolve ACTION_ID choice` as a fallback. No local agent process starts until that Inbox item is resolved and the queued task passes the existing scheduler/cockpit guardrails.
+After `/use PROJECT [model] [agent]` binds a chat or topic, ordinary non-command Telegram messages are treated as Codex worktree requests by default. If model and agent are omitted, Northstar stores the route as `codex orchestrator`; override that route label with `NORTHSTAR_TELEGRAM_DEFAULT_MODEL` and `NORTHSTAR_TELEGRAM_DEFAULT_AGENT`. The execution model defaults to Codex and can be changed with `NORTHSTAR_TELEGRAM_AUTOMATION_MODEL=codex|spark|opus`. Live Telegram messages queue the task and immediately try to start the local worktree run. The diagnostic `/api/telegram/intake` endpoint queues without dispatch unless `autoDispatch: true` is passed. Polaris still stops for missing project sessions, no local checkout, auth/guardrail failures, loop-guard limits, blocked runs, and final review.
 
 ### Telegram Lane Protocol
 

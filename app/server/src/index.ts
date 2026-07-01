@@ -352,7 +352,7 @@ const usageProfiles: Record<DispatchModel, {
     fiveHourCap: usageCap('CODEX_55', '5H', 250000),
     weeklyCap: usageCap('CODEX_55', 'WEEK', 1000000),
     computeWeight: usageWeight('CODEX_55', 1.6),
-    source: 'Codex CLI reserved/manual',
+    source: 'Codex CLI local worktree',
   },
 }
 
@@ -389,12 +389,7 @@ const telegramPromptChoiceModels: Record<string, DispatchModel | 'discard'> = {
   'Queue Claude plan': 'opus',
   Discard: 'discard',
 }
-
-function telegramPromptChoicesFor(model: DispatchModel) {
-  if (model === 'codex') return ['Queue Codex worktree', 'Queue Claude plan', 'Discard']
-  if (model === 'opus') return ['Queue Claude plan', 'Queue Spark worktree', 'Discard']
-  return ['Queue Spark worktree', 'Queue Claude plan', 'Discard']
-}
+const telegramAutomationModel = cleanTelegramAutomationModel(process.env.NORTHSTAR_TELEGRAM_AUTOMATION_MODEL)
 
 function loadAutomationState() {
   const rows = db.prepare('SELECT project_id, active, autonomous, cadence FROM project_settings').all() as Array<{
@@ -690,23 +685,6 @@ function telegramApprovalStage(model: DispatchModel) {
   return 'Telegram approved for Spark worktree'
 }
 
-function telegramPromptHelp(model: DispatchModel) {
-  if (model === 'codex') {
-    return 'Codex queues the reserved GPT-5.5 worktree lane behind scheduler/cockpit guardrails. Claude queues a plan-only pass. Discard closes the task without dispatch.'
-  }
-  if (model === 'opus') {
-    return 'Claude queues a plan-only pass first. Spark queues an isolated writable worktree. Discard closes the task without dispatch.'
-  }
-  return 'Spark queues an isolated writable worktree. Claude queues a plan-only pass. Discard closes the task without dispatch.'
-}
-
-function telegramSessionDispatchModel(session: TelegramSession): DispatchModel {
-  const value = session.model.trim().toLowerCase()
-  if (value === 'opus' || value === 'claude' || value === 'claude-code') return 'opus'
-  if (value === 'codex' || value === 'gpt-5.5' || value === 'gpt-5.5-codex' || value === 'reserved') return 'codex'
-  return 'spark'
-}
-
 function isTelegramPromptOptions(options: string[]) {
   return options.length >= 2 && options.includes('Discard') && options.every((option) => Boolean(telegramPromptChoiceModels[option]))
 }
@@ -750,7 +728,7 @@ function seedNextAutonomyQuestion(project: LocalProject) {
   return id
 }
 
-function queueTelegramPrompt(input: { text: string; session: TelegramSession; messageId: number }) {
+function queueTelegramPrompt(input: { text: string; session: TelegramSession; messageId: number; autoDispatch?: boolean }) {
   const prompt = input.text.trim()
   if (!prompt) return { ok: false as const, error: 'prompt_required' }
 
@@ -759,45 +737,40 @@ function queueTelegramPrompt(input: { text: string; session: TelegramSession; me
 
   const idStem = `${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 7).toUpperCase()}`
   const taskId = `TG-${idStem}`
-  const actionId = `TG-ACTION-${idStem}`
   const sourceRef = `telegram:${input.session.chatId}/${input.session.threadId}/${input.messageId}`
   const title = `Telegram: ${singleLine(prompt).slice(0, 110)}`
-  const model = telegramSessionDispatchModel(input.session)
-  const choices = telegramPromptChoicesFor(model)
+  const model = telegramAutomationModel
   const lane = inferTelegramLane(input.session.model, input.session.agent)
   const laneWarning = inferLaneMismatchWarning(input.session.model, input.session.agent)
 
   db.prepare(
     `INSERT INTO tasks
       (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'needs-input', 'P1', 0.2, 'waiting', 'awaiting Telegram review', 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
-  ).run(taskId, routed.projectId, title, model, cleanTaskAgent(input.session.agent), sourceRef, prompt)
+     VALUES (?, ?, ?, ?, ?, 'queued', 'P1', 0.1, 'now', ?, 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
+  ).run(taskId, routed.projectId, title, model, cleanTaskAgent(input.session.agent), telegramApprovalStage(model), sourceRef, prompt)
 
-  db.prepare(
-    `INSERT INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, ?, 'question', ?, 'P1', 'high', ?, ?, ?, 0, ?)`,
-  ).run(
-    actionId,
-    routed.projectId,
+  const dispatch = input.autoDispatch ? dispatchQueuedTask(taskId, { manualApproval: true }) : undefined
+  const task = queueTaskById(taskId)
+
+  return {
+    ok: true as const,
     taskId,
+    actionId: null,
+    project: routed.projectId,
     model,
-    `Review Telegram request for ${routed.projectName}`,
-    [
-      'Polaris captured your Telegram message and needs your approval before spending model time.',
-      `Project: ${routed.projectName}.`,
-      lane ? `Lane: ${lane}` : null,
-      laneWarning,
-      'No agent process has started.',
-      '',
-      'Request:',
-      prompt,
-    ].join('\n'),
-    JSON.stringify(choices),
-    telegramPromptHelp(model),
-  )
+    status: task?.status ?? (dispatch?.ok ? 'running' : 'queued'),
+    autoDispatched: input.autoDispatch === true,
+    dispatch,
+    lane,
+    laneWarning,
+  }
+}
 
-  return { ok: true as const, taskId, actionId, project: routed.projectId, model, lane, laneWarning }
+function cleanTelegramAutomationModel(value?: string): DispatchModel {
+  const normalized = String(value ?? '').trim().toLowerCase()
+  if (normalized === 'opus' || normalized === 'claude' || normalized === 'claude-code') return 'opus'
+  if (normalized === 'spark' || normalized === 'codex-spark') return 'spark'
+  return 'codex'
 }
 
 function resolveTelegramSessionProject(session: TelegramSession) {
@@ -957,6 +930,7 @@ fastify.post('/api/telegram/intake', async (request) => {
     threadId?: string
     text?: string
     messageId?: number
+    autoDispatch?: boolean
     document?: TelegramIntakeDocument
   }
   const chatId = body.chatId?.trim()
@@ -993,6 +967,7 @@ fastify.post('/api/telegram/intake', async (request) => {
       text: text.value,
       session,
       messageId: Number.isFinite(body.messageId) ? Number(body.messageId) : Date.now(),
+      autoDispatch: body.autoDispatch === true,
     })
     broadcastRealtime('telegram:prompt-queued', { result, tasks: listQueueTasks(), actions: listInboxActions(), projects: currentProjects() })
     return { ...result, tasks: listQueueTasks(), actions: listInboxActions(), lane: inferTelegramLane(session.model, session.agent), laneWarning: inferLaneMismatchWarning(session.model, session.agent) }
@@ -1540,9 +1515,6 @@ function queueDispatchability(task: QueueRow, projects: LocalProject[]): QueueDi
   }
 
   const settings = getSchedulerSettings(db)
-  if (task.model === 'codex') {
-    return base('guarded', 'Codex GPT-5.5 is reserved/manual and cannot be dispatched from Telegram or the default queue button.', 'Use an explicit local cockpit approval flow')
-  }
   if (!modelEnabled(settings, task.model)) {
     return base('model-disabled', `${modelLabel(task.model)} is disabled in scheduler settings.`, 'Enable the model lane or choose another model')
   }

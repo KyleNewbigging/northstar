@@ -39,7 +39,7 @@ async function main() {
   const focusedGraph = await getJson(`/api/graph/${focusId}`)
   const operations = await runOperationsOverviewSmoke()
   const schedulerDryRun = await runSchedulerDryRunSmoke()
-  const codexManualBlock = await runCodexManualBlockSmoke()
+  const codexEnabled = await runCodexEnabledSmoke()
   const taskLoopGuard = await runTaskLoopGuardSmoke()
   const taskSchema = runTaskLifecycleSchemaSmoke()
   const freshSchema = runFreshTaskSchemaSmoke()
@@ -84,7 +84,7 @@ async function main() {
     runs: { count: runs.runs.length, tmux: runs.runs.filter((run) => run.transport === 'tmux').length },
     operations,
     schedulerDryRun,
-    codexManualBlock,
+    codexEnabled,
     taskLoopGuard,
     taskSchema,
     freshSchema,
@@ -294,16 +294,20 @@ async function runSchedulerDryRunSmoke() {
   return { ok: true, dispatched: result.dispatched.length, skipped: result.skipped.length }
 }
 
-async function runCodexManualBlockSmoke() {
-  const result = await postJson('/api/dispatch', {
-    model: 'codex',
-    projectContext: 'northstar',
-    prompt: 'Smoke test reserved Codex manual block. Do not start a local run.',
-  })
-  assert(result.ok === false, 'reserved Codex dispatch without manualApproval should be blocked')
-  assert(result.blocked === true, 'reserved Codex dispatch should return blocked=true')
-  assert(String(result.error ?? '').includes('Manual approval'), 'reserved Codex dispatch should explain manual approval')
-  return { ok: true, blocked: true }
+async function runCodexEnabledSmoke() {
+  const taskId = `SMOKE-CODEX-ENABLED-${Date.now().toString(36)}`
+  try {
+    withDb((db) => {
+      insertLoopGuardTask(db, taskId, 'codex', 'Smoke Codex enabled dispatchability')
+    })
+    const detail = await getJson(`/api/queue/${encodeURIComponent(taskId)}`)
+    const status = detail.dispatchability?.status
+    assert(status !== 'guarded', 'Codex dispatchability should not be guarded by reserved/manual policy')
+    assert(status !== 'model-disabled', 'Codex scheduler lane should be enabled')
+    return { ok: true, dispatchability: status }
+  } finally {
+    cleanupLoopGuardSmoke([taskId])
+  }
 }
 
 async function runTaskLoopGuardSmoke() {
@@ -406,22 +410,16 @@ async function runTelegramIntakeSmoke() {
       threadId,
       messageId: 1001,
       text: `Smoke Spark worktree request ${stamp}`,
-      choice: '1',
-      expectedInitialModel: 'spark',
       expectedStatus: 'queued',
-      expectedModel: 'spark',
-      expectedOptions: ['Queue Spark worktree', 'Queue Claude plan', 'Discard'],
+      expectedModel: 'codex',
     })
     const claude = await assertTelegramPromptFlow({
       chatId,
       threadId,
       messageId: 1002,
       text: `Smoke Claude plan request ${stamp}`,
-      choice: '2',
-      expectedInitialModel: 'spark',
       expectedStatus: 'queued',
-      expectedModel: 'opus',
-      expectedOptions: ['Queue Spark worktree', 'Queue Claude plan', 'Discard'],
+      expectedModel: 'codex',
     })
 
     upsertSmokeTelegramSession(chatId, threadId, 'codex', 'orchestrator-smoke')
@@ -430,39 +428,22 @@ async function runTelegramIntakeSmoke() {
       threadId,
       messageId: 1003,
       text: `Smoke Codex orchestrator request ${stamp}`,
-      choice: '1',
-      expectedInitialModel: 'codex',
       expectedStatus: 'queued',
       expectedModel: 'codex',
-      expectedOptions: ['Queue Codex worktree', 'Queue Claude plan', 'Discard'],
-    })
-    const discarded = await assertTelegramPromptFlow({
-      chatId,
-      threadId,
-      messageId: 1004,
-      text: `Smoke discarded request ${stamp}`,
-      choice: '3',
-      expectedInitialModel: 'codex',
-      expectedStatus: 'done',
-      expectedModel: 'codex',
-      expectedOptions: ['Queue Codex worktree', 'Queue Claude plan', 'Discard'],
     })
     const laneWarning = await assertTelegramPromptFlow({
       chatId,
       threadId,
       messageId: 1005,
       text: `Smoke lane mismatch request ${stamp}`,
-      choice: '1',
-      expectedInitialModel: 'spark',
       expectedStatus: 'queued',
-      expectedModel: 'spark',
-      expectedOptions: ['Queue Spark worktree', 'Queue Claude plan', 'Discard'],
+      expectedModel: 'codex',
       expectedLane: 'orchestrator',
       expectedLaneWarning: 'model spark usually maps to personal lane, while agent orchestrator maps to orchestrator lane',
       preUpsert: { model: 'spark', agent: 'orchestrator' },
     })
-    created.push(...spark.created, ...claude.created, ...codex.created, ...discarded.created, ...laneWarning.created)
-    return { ok: true, prompts: 5 }
+    created.push(...spark.created, ...claude.created, ...codex.created, ...laneWarning.created)
+    return { ok: true, prompts: 4, model: 'codex', routePrompts: 0 }
   } finally {
     cleanupSmokeTelegramRows(chatId, created)
     await restoreTelegramInboxNotificationsAfterSmoke(telegramSettings)
@@ -490,11 +471,8 @@ async function runTelegramQuietNotificationSmoke() {
       threadId,
       messageId: 2001,
       text: `Quiet notification smoke ${stamp}`,
-      choice: '1',
-      expectedInitialModel: 'spark',
       expectedStatus: 'queued',
-      expectedModel: 'spark',
-      expectedOptions: ['Queue Spark worktree', 'Queue Claude plan', 'Discard'],
+      expectedModel: 'codex',
     })
     created.push(...flow.created)
     const taskId = flow.created[0]?.taskId
@@ -655,11 +633,8 @@ async function runTelegramDocumentIntakeSmoke() {
       `Expected stored prompt '${expectedSource}', got '${createdTask?.prompt}'`,
     )
 
-    const resolved = await postJson(`/api/inbox/${valid.actionId}/resolve`, { choice: '1' })
-    assert(resolved.ok === true, `Document Telegram inbox resolution failed: ${resolved.error ?? 'unknown error'}`)
-    const afterResolve = await getJson('/api/queue')
-    const resolvedTask = afterResolve.tasks.find((item) => item.id === valid.taskId)
-    assert(resolvedTask?.status === 'queued', 'Valid document intake should reach queued after approval')
+    assert(createdTask?.status === 'queued', 'Valid document intake should queue automatically')
+    assert(createdTask?.model === 'codex', 'Valid document intake should use the Codex automation lane')
   } finally {
     cleanupSmokeTelegramRows(chatId, created)
   }
@@ -1016,37 +991,23 @@ async function assertTelegramPromptFlow(input) {
     threadId: input.threadId,
     text: input.text,
     messageId: input.messageId,
+    autoDispatch: false,
   })
   assert(intake.ok === true, `Telegram intake failed: ${intake.error ?? 'unknown error'}`)
   created.push({ taskId: intake.taskId, actionId: intake.actionId })
 
   const queueBefore = await getJson('/api/queue')
-  let task = queueBefore.tasks.find((item) => item.id === intake.taskId)
-  assert(task?.status === 'needs-input', 'Telegram intake did not create a needs-input task')
+  const task = queueBefore.tasks.find((item) => item.id === intake.taskId)
+  assert(task?.status === input.expectedStatus, `Telegram task status expected ${input.expectedStatus}, got ${task?.status}`)
   assert(task.source === 'telegram', 'Telegram task source was not returned by /api/queue')
   assert(task.sourceRef === `telegram:${input.chatId}/${input.threadId}/${input.messageId}`, 'Telegram task sourceRef is incorrect')
   assert(task.prompt === input.text, 'Telegram task prompt was not stored verbatim')
-  if (input.expectedInitialModel) assert(task.model === input.expectedInitialModel, `Telegram task initial model expected ${input.expectedInitialModel}, got ${task.model}`)
-
-  if (input.expectedOptions) {
-    const inbox = await getJson('/api/inbox')
-    const action = inbox.actions.find((item) => item.id === intake.actionId)
-    assert(action, 'Telegram intake did not create an Inbox action')
-    assert(JSON.stringify(action.options) === JSON.stringify(input.expectedOptions), `Telegram action options expected ${input.expectedOptions.join(', ')}, got ${(action.options ?? []).join(', ')}`)
-    if (input.expectedLane) {
-      assert((intake.lane ?? '').toLowerCase() === input.expectedLane.toLowerCase(), `Telegram intake lane expected ${input.expectedLane}, got ${intake.lane}`)
-      assert(intake.laneWarning?.toLowerCase().includes((input.expectedLaneWarning ?? '').toLowerCase()), `Telegram lane warning missing expected text`)
-      const laneTag = (action.ctx || '').split('\n').find((line) => line.toLowerCase().startsWith('lane:'))
-      assert(Boolean(laneTag), 'Telegram intake action context should include Lane entry when lane guard data is present')
-    }
-  }
-
-  const resolved = await postJson(`/api/inbox/${intake.actionId}/resolve`, { choice: input.choice })
-  assert(resolved.ok === true, `Telegram inbox resolution failed: ${resolved.error ?? 'unknown error'}`)
-  task = resolved.tasks.find((item) => item.id === intake.taskId)
-  assert(task?.status === input.expectedStatus, `Telegram task status expected ${input.expectedStatus}, got ${task?.status}`)
   assert(task?.model === input.expectedModel, `Telegram task model expected ${input.expectedModel}, got ${task?.model}`)
-  assert(task?.prompt === input.text, 'Telegram task prompt changed after resolution')
+  assert(intake.actionId === null || typeof intake.actionId === 'undefined', 'Telegram intake should not create a route-choice Inbox action')
+  if (input.expectedLane) {
+    assert((intake.lane ?? '').toLowerCase() === input.expectedLane.toLowerCase(), `Telegram intake lane expected ${input.expectedLane}, got ${intake.lane}`)
+    assert(intake.laneWarning?.toLowerCase().includes((input.expectedLaneWarning ?? '').toLowerCase()), `Telegram lane warning missing expected text`)
+  }
   return { created }
 }
 

@@ -80,7 +80,7 @@ export function seedSchedulerSettings(db: DatabaseSync) {
   db.prepare(
     `INSERT OR IGNORE INTO scheduler_settings
       (id, enabled, timezone, start_time, end_time, weekday_reserve_pct, max_parallel_runs, spark_enabled, opus_enabled, codex_enabled)
-     VALUES ('default', 1, 'America/Toronto', '22:30', '06:30', 35, 2, 1, 1, 0)`,
+     VALUES ('default', 1, 'America/Toronto', '22:30', '06:30', 35, 2, 1, 1, 1)`,
   ).run()
 }
 
