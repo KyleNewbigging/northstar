@@ -46,7 +46,7 @@ async function main() {
   const telegramIntake = await runTelegramIntakeSmoke()
   const telegramQuietNotifications = await runTelegramQuietNotificationSmoke()
   const telegramNaturalReplies = runTelegramNaturalReplySmoke()
-  const telegramNoSession = await runTelegramNoSessionIntakeSmoke()
+  const telegramAutoRoute = await runTelegramAutoRouteIntakeSmoke()
   const telegramDocIntake = await runTelegramDocumentIntakeSmoke()
   const attentionAlerts = await runAttentionAlertSmoke()
   const garminImport = await runGarminImportSmoke()
@@ -92,7 +92,7 @@ async function main() {
     telegramIntake,
     telegramQuietNotifications,
     telegramNaturalReplies,
-    telegramNoSession,
+    telegramAutoRoute,
     telegramDocIntake,
     attentionAlerts,
     garminImport,
@@ -333,18 +333,19 @@ async function runTaskLoopGuardSmoke() {
     const queue = await getJson('/api/queue')
     const totalTask = queue.tasks.find((task) => task.id === totalTaskId)
     const modelTask = queue.tasks.find((task) => task.id === modelTaskId)
-    assert(totalTask?.dispatchability?.status === 'guarded', 'total-attempt loop guard did not block dispatchability')
-    assert(String(totalTask.dispatchability.reason).includes('after 3 dispatch attempts'), 'total-attempt guard reason should explain three attempts')
-    assert(modelTask?.dispatchability?.status === 'guarded', 'per-model loop guard did not block dispatchability')
-    assert(String(modelTask.dispatchability.reason).includes('already tried it 2 times'), 'per-model guard reason should explain two model attempts')
+    assert(totalTask?.dispatchability?.status === 'scheduler-waiting', 'total-attempt loop monitor should put dispatchability into cooldown')
+    assert(String(totalTask.dispatchability.reason).includes('3 dispatch attempts'), 'total-attempt monitor reason should explain three attempts')
+    assert(String(totalTask.dispatchability.reason).includes('Estimated retry usage'), 'total-attempt monitor should include estimated usage percentages')
+    assert(modelTask?.dispatchability?.status === 'scheduler-waiting', 'per-model loop monitor should put dispatchability into cooldown')
+    assert(String(modelTask.dispatchability.reason).includes('already tried this task 2 times'), 'per-model monitor reason should explain two model attempts')
 
     const dispatch = await postJson(`/api/queue/${encodeURIComponent(totalTaskId)}/dispatch`, {})
-    assert(dispatch.ok === false && dispatch.blocked === true, 'guarded task dispatch should return blocked=true')
+    assert(dispatch.ok === false && dispatch.dispatchability?.status === 'scheduler-waiting', 'cooling task dispatch should return scheduler-waiting')
     const detail = await getJson(`/api/queue/${encodeURIComponent(totalTaskId)}`)
-    assert(detail.task?.status === 'needs-input', 'guarded dispatch should pause task as needs-input')
-    assert((detail.actions ?? []).some((action) => action.id === `LOOP-GUARD-${totalTaskId}`), 'guarded dispatch should create one Polaris inbox action')
+    assert(detail.task?.status === 'queued', 'loop monitor cooldown should leave task queued for retry')
+    assert(!(detail.actions ?? []).some((action) => action.id === `LOOP-GUARD-${totalTaskId}`), 'loop monitor cooldown should not create a blocking inbox action')
 
-    return { ok: true, totalGuarded: true, modelGuarded: true }
+    return { ok: true, totalCooling: true, modelCooling: true }
   } finally {
     cleanupLoopGuardSmoke(createdTaskIds)
   }
@@ -509,21 +510,24 @@ async function runTelegramQuietNotificationSmoke() {
   }
 }
 
-async function runTelegramNoSessionIntakeSmoke() {
+async function runTelegramAutoRouteIntakeSmoke() {
   const stamp = Date.now().toString(36)
-  const chatId = `orphan-${stamp}`
+  const chatId = `autoroute-${stamp}`
   const threadId = 'main'
-  const noSession = await postJson('/api/telegram/intake', {
+  const routed = await postJson('/api/telegram/intake', {
     chatId,
     threadId,
-    text: `orphan-message-${stamp}`,
+    text: `Can you work on the Zebra dashboard Telegram workflow? ${stamp}`,
     messageId: 99,
   })
-  assert(noSession.ok === false, 'Telegram no-session intake should not succeed')
-  assert(noSession.error === 'telegram_session_not_found', `Telegram no-session error was expected but got ${noSession.error}`)
-  assert(typeof noSession.errorMessage === 'string' && noSession.errorMessage.includes('No Telegram project session'), 'Telegram no-session guidance was not returned')
-  assert(noSession.sessionCount === 0, 'Telegram no-session response session count should be zero')
-  return { ok: true, status: noSession.error }
+  assert(routed.ok === true, `Telegram auto-route intake should succeed: ${routed.error}`)
+  assert(routed.sessionCreated === true, 'Telegram auto-route should create a session for a new chat/topic')
+  assert(routed.session?.project === 'zebra-dashboard', `Telegram auto-route project expected zebra-dashboard but got ${routed.session?.project}`)
+  assert(routed.session?.agent === 'orchestrator', `Telegram auto-route agent expected orchestrator but got ${routed.session?.agent}`)
+  assert(routed.session?.model === 'codex', `Telegram auto-route model expected codex but got ${routed.session?.model}`)
+  assert(routed.project === 'zebra-dashboard', `Telegram auto-route task project expected zebra-dashboard but got ${routed.project}`)
+  cleanupSmokeTelegramRows(chatId, [{ taskId: routed.taskId }])
+  return { ok: true, project: routed.project, lane: routed.lane, sessionCreated: routed.sessionCreated }
 }
 
 function runTelegramNaturalReplySmoke() {
@@ -548,10 +552,14 @@ function runTelegramNaturalReplySmoke() {
     const second = mod.parseNaturalLanguageResolution('second option', actions);
     const discard = mod.parseNaturalLanguageResolution('discard', actions);
     const longPrompt = mod.parseNaturalLanguageResolution('yes and also can you build a completely separate new dashboard feature for me right now please', actions);
+    const zebraRoute = mod.inferNaturalTelegramRoute('Please handle this for Zebra dashboard');
+    const defaultRoute = mod.inferNaturalTelegramRoute('Can you take a look at this workflow?');
     if (!yes?.ok || yes.choice !== '1') throw new Error('yes should choose the recommended first option');
     if (!second?.ok || second.choice !== '2') throw new Error('second option should choose option 2');
     if (!discard?.ok || discard.choice !== '3') throw new Error('discard should choose the discard option');
     if (longPrompt !== null) throw new Error('long prompts should not be swallowed as inbox resolutions');
+    if (zebraRoute.project !== 'zebra-dashboard' || zebraRoute.agent !== 'orchestrator') throw new Error('Zebra route should default to orchestrator');
+    if (defaultRoute.project !== 'northstar' || defaultRoute.agent !== 'orchestrator') throw new Error('default route should be Northstar orchestrator');
   `
   const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
     cwd: process.cwd(),

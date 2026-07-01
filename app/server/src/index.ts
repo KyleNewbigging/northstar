@@ -20,6 +20,7 @@ import { listOnboarding, seedProjectOnboarding } from './onboarding.js'
 import { getSchedulerSettings, updateSchedulerSettings, type SchedulerSettings } from './scheduler.js'
 import {
   createTelegramBridge,
+  inferNaturalTelegramRoute,
   listTelegramSessions,
   probeTelegramDocumentIntake,
   telegramCommandNames,
@@ -32,6 +33,7 @@ import { codexUsagePath, isFresh, readClaudeUsageSnapshot, readOrRefreshCodexUsa
 
 const maxTaskDispatchAttempts = Number(process.env.NORTHSTAR_TASK_MAX_DISPATCH_ATTEMPTS ?? '3')
 const maxTaskModelAttempts = Number(process.env.NORTHSTAR_TASK_MAX_MODEL_ATTEMPTS ?? '2')
+const loopMonitorCooldownMs = Number(process.env.NORTHSTAR_LOOP_MONITOR_COOLDOWN_MS ?? `${10 * 60 * 1000}`)
 const fastify = Fastify({ logger: true })
 await fastify.register(cors, { origin: [/^http:\/\/127\.0\.0\.1:\d+$/, /^http:\/\/localhost:\d+$/] })
 await fastify.register(websocket)
@@ -941,17 +943,6 @@ fastify.post('/api/telegram/intake', async (request) => {
   const key = `${chatId}/${threadId}`
   const sessionFind = () => {
     const sessionsForChat = listTelegramSessions(db).filter((item) => item.chatId === chatId)
-    const session = sessionsForChat.find((item) => item.threadId === threadId)
-    if (!session) {
-      const chatSessions = sessionsForChat
-      return {
-        ok: false,
-        error: 'telegram_session_not_found' as const,
-        errorMessage: buildTelegramIntakeNoSessionMessage(chatId, threadId, chatSessions),
-        sessions: chatSessions,
-        sessionCount: chatSessions.length,
-      } as const
-    }
     const text = deriveIntakeText({ directText, docBody })
     if (!text.ok) {
       return {
@@ -963,6 +954,24 @@ fastify.post('/api/telegram/intake', async (request) => {
       } as const
     }
 
+    let session = sessionsForChat.find((item) => item.threadId === threadId)
+    let sessionCreated = false
+    let routeReason: string | null = null
+    if (!session) {
+      const route = inferNaturalTelegramRoute(text.value, sessionsForChat)
+      routeReason = route.reason
+      const workspace = deviceFiles.ensureProjectWorkspace({ project: route.project })
+      session = upsertTelegramSession(db, {
+        chatId,
+        threadId,
+        project: workspace.ok ? workspace.project : route.project,
+        model: route.model,
+        agent: route.agent,
+        cwd: workspace.ok ? workspace.relPath : `projects/${route.project}`,
+      })
+      sessionCreated = true
+    }
+
     const result = queueTelegramPrompt({
       text: text.value,
       session,
@@ -970,7 +979,16 @@ fastify.post('/api/telegram/intake', async (request) => {
       autoDispatch: body.autoDispatch === true,
     })
     broadcastRealtime('telegram:prompt-queued', { result, tasks: listQueueTasks(), actions: listInboxActions(), projects: currentProjects() })
-    return { ...result, tasks: listQueueTasks(), actions: listInboxActions(), lane: inferTelegramLane(session.model, session.agent), laneWarning: inferLaneMismatchWarning(session.model, session.agent) }
+    return {
+      ...result,
+      tasks: listQueueTasks(),
+      actions: listInboxActions(),
+      session,
+      sessionCreated,
+      routeReason,
+      lane: inferTelegramLane(session.model, session.agent),
+      laneWarning: inferLaneMismatchWarning(session.model, session.agent),
+    }
   }
 
   const previous = telegramIntakeSerializers.get(key) ?? Promise.resolve<void>(undefined)
@@ -1502,8 +1520,8 @@ function queueDispatchability(task: QueueRow, projects: LocalProject[]): QueueDi
   if (task.status === 'done') return base('done', 'This task is already complete.', 'Review the archived result')
   if (task.status === 'needs-input') return base('needs-input', task.stage || 'This task needs an inbox answer before dispatch.', 'Resolve the inbox item')
   if (task.status === 'blocked') return base('blocked', task.stage || 'This task is blocked.', 'Resume or revise the task')
-  const attemptGuard = taskAttemptGuard(task)
-  if (!attemptGuard.ok) return base('guarded', attemptGuard.reason, 'Review with Polaris before spending more model time')
+  const attemptMonitor = taskAttemptMonitor(task)
+  if (!attemptMonitor.ok) return base('scheduler-waiting', attemptMonitor.reason, 'Wait for the loop monitor cooldown, then retry automatically', false, true)
 
   const project = projects.find((item) => item.id === task.project)
   if (!project) return base('missing-project', 'Project is not in the current Northstar inventory.', 'Refresh projects or recreate the task')
@@ -1531,30 +1549,52 @@ function queueDispatchability(task: QueueRow, projects: LocalProject[]): QueueDi
   return base('runnable', 'Local checkout, model lane, tmux, and slot checks are clear for a review-gated worktree run.', 'Run review-gated worktree', true)
 }
 
-function taskAttemptGuard(task: Pick<QueueRow, 'id' | 'model' | 'title' | 'project'>) {
+function taskAttemptMonitor(task: Pick<QueueRow, 'id' | 'model' | 'title' | 'project'>) {
   const rows = db
-    .prepare('SELECT model, COUNT(*) AS count FROM agent_runs WHERE task_id = ? GROUP BY model')
-    .all(task.id) as Array<{ model: DispatchModel; count: number }>
-  const byModel = new Map(rows.map((row) => [row.model, Number(row.count)]))
-  const total = rows.reduce((sum, row) => sum + Number(row.count), 0)
-  const currentModelAttempts = byModel.get(task.model) ?? 0
+    .prepare('SELECT model, COALESCE(completed_at, updated_at, started_at) AS attemptedAt FROM agent_runs WHERE task_id = ?')
+    .all(task.id) as Array<{ model: DispatchModel; attemptedAt?: string | null }>
+  const total = rows.length
+  const currentModelAttempts = rows.filter((row) => row.model === task.model).length
+  const thresholdHit = total >= maxTaskDispatchAttempts || currentModelAttempts >= maxTaskModelAttempts
+  if (!thresholdHit) return { ok: true as const, total, currentModelAttempts, monitored: false }
+
+  const latestAttemptMs = rows.reduce((latest, row) => Math.max(latest, sqliteTimeMs(row.attemptedAt)), 0)
+  const cooldownMs = Number.isFinite(loopMonitorCooldownMs) && loopMonitorCooldownMs > 0 ? loopMonitorCooldownMs : 0
+  const nextRetryMs = latestAttemptMs + cooldownMs
+  if (cooldownMs === 0 || !latestAttemptMs || Date.now() >= nextRetryMs) {
+    return {
+      ok: true as const,
+      total,
+      currentModelAttempts,
+      monitored: true,
+      reason: loopMonitorReason(total, currentModelAttempts, task.model),
+    }
+  }
+
+  return {
+    ok: false as const,
+    total,
+    currentModelAttempts,
+    nextRetryAt: new Date(nextRetryMs).toISOString(),
+    reason: `${loopMonitorReason(total, currentModelAttempts, task.model)} Cooling down until ${new Date(nextRetryMs).toISOString()} before spending more model time.`,
+  }
+}
+
+function loopMonitorReason(total: number, currentModelAttempts: number, model: DispatchModel) {
+  const totalPct = maxTaskDispatchAttempts > 0 ? Math.round(Math.min(100, (total / maxTaskDispatchAttempts) * 100)) : 100
+  const modelPct = maxTaskModelAttempts > 0 ? Math.round(Math.min(100, (currentModelAttempts / maxTaskModelAttempts) * 100)) : 100
+  const usage = `Estimated retry usage: ${totalPct}% total, ${modelPct}% on ${modelLabel(model)}.`
   if (total >= maxTaskDispatchAttempts) {
-    return {
-      ok: false as const,
-      total,
-      currentModelAttempts,
-      reason: `Polaris paused this task after ${total} dispatch attempt${total === 1 ? '' : 's'} to prevent a model handoff loop.`,
-    }
+    return `Loop monitor observed ${total} dispatch attempt${total === 1 ? '' : 's'} for this task. ${usage}`
   }
-  if (currentModelAttempts >= maxTaskModelAttempts) {
-    return {
-      ok: false as const,
-      total,
-      currentModelAttempts,
-      reason: `Polaris paused this task because ${modelLabel(task.model)} has already tried it ${currentModelAttempts} times.`,
-    }
-  }
-  return { ok: true as const, total, currentModelAttempts }
+  return `Loop monitor observed ${modelLabel(model)} has already tried this task ${currentModelAttempts} time${currentModelAttempts === 1 ? '' : 's'}. ${usage}`
+}
+
+function sqliteTimeMs(value?: string | null) {
+  if (!value) return 0
+  const normalized = value.includes('T') ? value : `${value.replace(' ', 'T')}Z`
+  const time = Date.parse(normalized)
+  return Number.isFinite(time) ? time : 0
 }
 
 function isTaskStale(task: QueueRow) {
@@ -1851,11 +1891,6 @@ function dispatchQueuedTask(id: string, body: ManualApprovalBody = {}) {
   const projects = currentProjects()
   const decorated = decorateQueueTask(task, projects)
   if (!decorated.dispatchability.canDispatchNow) {
-    const attemptGuard = taskAttemptGuard(task)
-    if (!attemptGuard.ok) {
-      pauseTaskForAttemptGuard(task, attemptGuard.reason)
-      return { ok: false, blocked: true, error: attemptGuard.reason, dispatchability: decorated.dispatchability, task: queueTaskById(id) ?? decorated }
-    }
     return { ok: false, error: decorated.dispatchability.reason, dispatchability: decorated.dispatchability, task: decorated }
   }
   const runnable = runnableProject(projects, task.project)
@@ -1963,38 +1998,6 @@ function runSchedulerTick(body: SchedulerTickBody) {
     dispatched,
     skipped,
   }
-}
-
-function pauseTaskForAttemptGuard(task: QueueRow, reason: string) {
-  db.prepare(
-    `UPDATE tasks
-     SET status = 'needs-input',
-       eta = 'paused',
-       stage = ?,
-       updated_at = CURRENT_TIMESTAMP,
-       completed_at = NULL
-     WHERE id = ? AND status != 'running'`,
-  ).run(reason, task.id)
-
-  db.prepare(
-    `INSERT OR IGNORE INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, ?, 'blocked', ?, 'P1', 'high', ?, ?, ?, 0, ?)`,
-  ).run(
-    `LOOP-GUARD-${task.id}`,
-    task.project,
-    task.id,
-    task.model,
-    `Polaris paused ${task.title}`,
-    [
-      `Polaris stopped this before spending more tokens.`,
-      `Project: ${task.project}.`,
-      reason,
-      'Choose whether to add context, leave it paused, or discard it.',
-    ].join(' '),
-    JSON.stringify(['Add context and retry later', 'Keep paused', 'Discard']),
-    'This guardrail prevents the same task from bouncing across models or retrying one model repeatedly. Defaults: 3 total dispatch attempts per task, 2 per model.',
-  )
 }
 
 function buildTaskPrompt(task: QueueRow, project: LocalProject) {

@@ -242,7 +242,7 @@ type TelegramPromptInput = {
 }
 
 type TelegramPromptResult =
-  | { ok: true; taskId: string; actionId?: string | null; project: string; model: string; status?: string; autoDispatched?: boolean; dispatch?: BridgeRunTaskResult; lane?: TelegramUseLane; laneWarning?: string | null }
+  | { ok: true; taskId: string; actionId?: string | null; project: string; model: string; status?: string; autoDispatched?: boolean; dispatch?: BridgeRunTaskResult; lane?: string; laneWarning?: string | null }
   | { ok: false; error: string }
 
 type TelegramApiResponse<T> = {

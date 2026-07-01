@@ -29,8 +29,12 @@ type SchedulerRow = {
 }
 
 export function getSchedulerSettings(db: DatabaseSync): SchedulerSettings {
-  seedSchedulerSettings(db)
-  const row = db.prepare("SELECT * FROM scheduler_settings WHERE id = 'default'").get() as SchedulerRow
+  let row = db.prepare("SELECT * FROM scheduler_settings WHERE id = 'default'").get() as SchedulerRow | undefined
+  if (!row) {
+    seedSchedulerSettings(db)
+    row = db.prepare("SELECT * FROM scheduler_settings WHERE id = 'default'").get() as SchedulerRow | undefined
+  }
+  if (!row) throw new Error('scheduler_settings_missing')
   return mapSchedulerRow(row)
 }
 
