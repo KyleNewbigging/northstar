@@ -1,0 +1,101 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic "Northstar" [ref=e5]:
+      - img [ref=e6]
+    - generic [ref=e9]:
+      - button "Dashboard" [ref=e10] [cursor=pointer]:
+        - img [ref=e11]
+        - generic: Dashboard
+      - button "Health" [ref=e21] [cursor=pointer]:
+        - img [ref=e22]
+        - generic: Health
+      - button "1 Inbox" [ref=e212] [cursor=pointer]:
+        - img [ref=e26]
+        - generic [ref=e29]: "1"
+        - generic: Inbox
+      - button "Agent Queue" [ref=e30] [cursor=pointer]:
+        - img [ref=e31]
+        - generic: Agent Queue
+      - button "Schedule" [ref=e35] [cursor=pointer]:
+        - img [ref=e36]
+        - generic: Schedule
+      - button "Graph Cockpit" [ref=e39] [cursor=pointer]:
+        - img [ref=e40]
+        - generic: Graph Cockpit
+      - button "Patch Review" [active] [ref=e45] [cursor=pointer]:
+        - img [ref=e46]
+        - generic: Patch Review
+    - button "Settings" [ref=e50] [cursor=pointer]:
+      - img [ref=e51]
+      - generic: Settings
+  - banner [ref=e54]:
+    - generic [ref=e55]:
+      - generic [ref=e56]: NORTHSTAR
+      - generic [ref=e57]: /
+      - generic [ref=e58]:
+        - generic [ref=e59]: PATCH REVIEW
+        - generic [ref=e60]: worktree patch preview
+    - generic [ref=e61]:
+      - generic "codex_app_server · OpenAI" [ref=e213]:
+        - generic [ref=e63]:
+          - generic [ref=e65]: Codex GPT-5.5
+          - generic [ref=e66]: 23%
+        - generic [ref=e67]:
+          - generic [ref=e68]: 5H
+          - generic [ref=e70]: WK
+        - generic [ref=e72]:
+          - generic [ref=e73]: live source
+          - generic [ref=e74]: 0 live
+          - generic [ref=e75]: 0 queued
+      - generic "codex_app_server · OpenAI" [ref=e216]:
+        - generic [ref=e77]:
+          - generic [ref=e79]: Codex Spark
+          - generic [ref=e80]: 0%
+        - generic [ref=e81]:
+          - generic [ref=e82]: 5H
+          - generic [ref=e84]: WK
+        - generic [ref=e86]:
+          - generic [ref=e87]: live source
+          - generic [ref=e88]: 0 live
+          - generic [ref=e89]: 58 queued
+      - generic "claude.ai local CLI · Anthropic" [ref=e217]:
+        - generic [ref=e91]:
+          - generic [ref=e93]: Claude Code
+          - generic [ref=e94]: 0%
+        - generic [ref=e95]:
+          - generic [ref=e96]: 5H
+          - generic [ref=e98]: WK
+        - generic [ref=e100]:
+          - generic [ref=e101]: estimate
+          - generic [ref=e102]: 0 live
+          - generic [ref=e103]: 10 queued
+      - generic [ref=e104]:
+        - img [ref=e105]
+        - generic [ref=e107]: "3"
+      - generic [ref=e108]: 01:45:55
+  - main [ref=e109]:
+    - generic [ref=e219]:
+      - img [ref=e220]
+      - generic [ref=e222]: No patch artifact yet.
+      - generic [ref=e223]: Dispatch or open a queued review task first. Northstar keeps worktrees local and will show the diff here once a patch artifact exists.
+      - generic [ref=e224]:
+        - button "Queue" [ref=e225] [cursor=pointer]
+        - button "Scan latest run" [ref=e226] [cursor=pointer]
+  - generic [ref=e186]:
+    - generic [ref=e187]:
+      - button "Start voice input" [ref=e188] [cursor=pointer]:
+        - img [ref=e189]
+      - button "Project context selector" [ref=e193] [cursor=pointer]:
+        - generic [ref=e195]: active-projects
+        - img [ref=e196]
+      - textbox "Direct an agent - ask status, queue graphify, or draft a patch" [ref=e198]
+      - button "Claude Code" [ref=e200] [cursor=pointer]:
+        - generic [ref=e202]: Claude Code
+        - img [ref=e203]
+      - button "Dispatch" [ref=e205] [cursor=pointer]:
+        - img [ref=e206]
+        - text: Dispatch
+    - generic [ref=e208]:
+      - generic [ref=e209]: CMD K command palette · CMD J dictation
+      - generic [ref=e210]: Local Whisper ready
+      - generic [ref=e211]: "@ files · # tasks"

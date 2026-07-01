@@ -1,0 +1,144 @@
+- generic [ref=e3]:
+  - navigation [ref=e4]:
+    - generic "Northstar" [ref=e5]:
+      - img [ref=e6]
+    - generic [ref=e9]:
+      - button "Dashboard" [ref=e10] [cursor=pointer]:
+        - img [ref=e11]
+        - generic: Dashboard
+      - button "Health" [ref=e21] [cursor=pointer]:
+        - img [ref=e22]
+        - generic: Health
+      - button "3 Inbox" [ref=e25] [cursor=pointer]:
+        - img [ref=e26]
+        - generic [ref=e29]: "3"
+        - generic: Inbox
+      - button "Agent Queue" [ref=e30] [cursor=pointer]:
+        - img [ref=e31]
+        - generic: Agent Queue
+      - button "Schedule" [ref=e35] [cursor=pointer]:
+        - img [ref=e36]
+        - generic: Schedule
+      - button "Graph Cockpit" [ref=e39] [cursor=pointer]:
+        - img [ref=e40]
+        - generic: Graph Cockpit
+      - button "Patch Review" [ref=e45] [cursor=pointer]:
+        - img [ref=e46]
+        - generic: Patch Review
+    - button "Settings" [ref=e50] [cursor=pointer]:
+      - img [ref=e51]
+      - generic: Settings
+  - banner [ref=e54]:
+    - generic [ref=e55]:
+      - generic [ref=e56]: NORTHSTAR
+      - generic [ref=e57]: /
+      - generic [ref=e58]:
+        - generic [ref=e59]: FLIGHT DECK
+        - generic [ref=e60]: 1 projects · local inventory
+    - generic [ref=e61]:
+      - generic "local fallback · OpenAI" [ref=e62]:
+        - generic [ref=e63]:
+          - generic [ref=e65]: Codex GPT-5.5
+          - generic [ref=e66]: 0%
+        - generic [ref=e67]:
+          - generic [ref=e68]: 5H
+          - generic [ref=e70]: WK
+        - generic [ref=e72]:
+          - generic [ref=e73]: estimate
+          - generic [ref=e74]: 0 live
+          - generic [ref=e75]: 0 queued
+      - generic "local fallback · OpenAI" [ref=e76]:
+        - generic [ref=e77]:
+          - generic [ref=e79]: Codex Spark
+          - generic [ref=e80]: 0%
+        - generic [ref=e81]:
+          - generic [ref=e82]: 5H
+          - generic [ref=e84]: WK
+        - generic [ref=e86]:
+          - generic [ref=e87]: estimate
+          - generic [ref=e88]: 0 live
+          - generic [ref=e89]: 0 queued
+      - generic "local fallback · Anthropic" [ref=e90]:
+        - generic [ref=e91]:
+          - generic [ref=e93]: Claude Code
+          - generic [ref=e94]: 0%
+        - generic [ref=e95]:
+          - generic [ref=e96]: 5H
+          - generic [ref=e98]: WK
+        - generic [ref=e100]:
+          - generic [ref=e101]: estimate
+          - generic [ref=e102]: 0 live
+          - generic [ref=e103]: 0 queued
+      - generic [ref=e104]:
+        - img [ref=e105]
+        - generic [ref=e107]: "1"
+      - generic [ref=e108]: 01:42:56
+  - main [ref=e109]:
+    - generic [ref=e110]:
+      - generic [ref=e111]:
+        - button "PROJECTS TRACKED 1 1 local · 0 GitHub linked" [ref=e112] [cursor=pointer]:
+          - generic [ref=e113]:
+            - generic [ref=e114]: PROJECTS TRACKED
+            - img [ref=e116]
+          - generic [ref=e126]: "1"
+          - generic [ref=e127]: 1 local · 0 GitHub linked
+        - button "ACTIVE PROJECTS 0 0 graph ready · slow-lane context" [ref=e128] [cursor=pointer]:
+          - generic [ref=e129]:
+            - generic [ref=e130]: ACTIVE PROJECTS
+            - img [ref=e132]
+          - generic [ref=e134]: "0"
+          - generic [ref=e135]: 0 graph ready · slow-lane context
+        - button "INACTIVE PROJECTS 1 parked until you activate them" [ref=e136] [cursor=pointer]:
+          - generic [ref=e137]:
+            - generic [ref=e138]: INACTIVE PROJECTS
+            - img [ref=e140]
+          - generic [ref=e143]: "1"
+          - generic [ref=e144]: parked until you activate them
+        - button "GRAPH READY 0 1 missing graphify snapshots" [ref=e145] [cursor=pointer]:
+          - generic [ref=e146]:
+            - generic [ref=e147]: GRAPH READY
+            - img [ref=e149]
+          - generic [ref=e154]: "0"
+          - generic [ref=e155]: 1 missing graphify snapshots
+      - generic [ref=e156]:
+        - generic [ref=e157]:
+          - generic [ref=e158]:
+            - generic [ref=e159]: ACTIVE PROJECTS
+            - generic [ref=e160]: 0 visible · 1 tracked
+            - generic "Dashboard layout" [ref=e161]:
+              - button "cards" [ref=e162] [cursor=pointer]
+              - button "list" [ref=e163] [cursor=pointer]
+              - button "mosaic" [ref=e164] [cursor=pointer]
+            - button "Show inactive" [ref=e165] [cursor=pointer]
+          - generic [ref=e166]:
+            - img [ref=e167]
+            - generic [ref=e169]: No active projects.
+            - button "Review inactive projects" [ref=e170] [cursor=pointer]
+        - generic [ref=e172]:
+          - generic [ref=e173]:
+            - img [ref=e174]
+            - heading "Telemetry Stream" [level=3] [ref=e176]
+          - generic [ref=e179]:
+            - generic [ref=e180]: now
+            - img [ref=e181]
+            - generic [ref=e183]:
+              - generic [ref=e184]: rebuild cockpit from prototype
+              - generic [ref=e185]: northstar · TypeScript
+  - generic [ref=e186]:
+    - generic [ref=e187]:
+      - button "Start voice input" [ref=e188] [cursor=pointer]:
+        - img [ref=e189]
+      - button "Project context selector" [ref=e193] [cursor=pointer]:
+        - generic [ref=e195]: active-projects
+        - img [ref=e196]
+      - textbox "Direct an agent - ask status, queue graphify, or draft a patch" [ref=e198]
+      - button "Claude Code" [ref=e200] [cursor=pointer]:
+        - generic [ref=e202]: Claude Code
+        - img [ref=e203]
+      - button "Dispatch" [ref=e205] [cursor=pointer]:
+        - img [ref=e206]
+        - text: Dispatch
+    - generic [ref=e208]:
+      - generic [ref=e209]: CMD K command palette · CMD J dictation
+      - generic [ref=e210]: Local Whisper ready
+      - generic [ref=e211]: "@ files · # tasks"

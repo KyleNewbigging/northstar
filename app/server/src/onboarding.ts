@@ -113,12 +113,15 @@ function frontendProfile(project: LocalProject): ProjectProfile {
 }
 
 function opsDashboardProfile(project: LocalProject): ProjectProfile {
-  return baseProfile(project, 'ops/dashboard', [
+  return baseProfile(project, 'corporate/orchestration', [
     'Treat billing, auth, student/family data, and outbound communication as high-risk.',
     'Prefer inbox-style review flows with explicit status transitions.',
     'Ask before changing production data, payment workflows, or email behavior.',
+    'For Zebra/corporate work, map agent domains, owners, and communication protocols before increasing autonomy.',
+    'Separate personal-assistant tasks from code-orchestration tasks so the cockpit can scale to many agents without mixing blast radius.',
   ], [
     queue(project, 'RISK', 'Map high-risk workflows and current manual gates', 'opus', 'P1', 'risk map'),
+    queue(project, 'AGENTS', 'Draft the agent/domain registry and communication protocol map', 'opus', 'P1', 'agent protocol map'),
     queue(project, 'MAP', 'Refresh graph and summarize data entry points', 'spark', 'P2', 'graph + data map'),
     queue(project, 'NEXT', 'Propose the next review-gated automation candidate', 'spark', 'P2', 'workflow candidate'),
   ])

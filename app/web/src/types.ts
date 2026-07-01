@@ -64,6 +64,35 @@ export type ModelInfo = {
   reserved?: boolean
 }
 
+export type ModelUsage = {
+  id: ModelId
+  label: string
+  provider: string
+  source: string
+  sourceKind?: 'claude_statusline' | 'chatgpt_codex_analytics' | 'codex_app_server' | 'local_estimate'
+  sourceFresh?: boolean
+  tokens5h: number
+  tokens5hCap: number
+  tokensWeek: number
+  tokensWeekCap: number
+  fiveHourUsedPct?: number | null
+  weeklyUsedPct?: number | null
+  fiveHourResetAt?: string | null
+  weeklyResetAt?: string | null
+  computePct: number
+  liveRuns: number
+  queued: number
+  updatedAt: string
+}
+
+export type ModelAuthStatus = {
+  model: ModelId
+  ok: boolean
+  blockers: string[]
+  checkCommand: string
+  loginCommand: string
+}
+
 export type QueueTask = {
   id: string
   title: string
@@ -77,6 +106,39 @@ export type QueueTask = {
   stage: string
   files: number
   branch: string
+  source?: string
+  sourceRef?: string
+  prompt?: string
+  createdAt?: string | null
+  updatedAt?: string | null
+  completedAt?: string | null
+  dispatchStatus?: QueueDispatchStatus | string | null
+  dispatchBlocker?: string | null
+  dispatchability?: QueueDispatchability
+}
+
+export type QueueDispatchStatus =
+  | 'runnable'
+  | 'scheduler-waiting'
+  | 'running'
+  | 'done'
+  | 'needs-input'
+  | 'blocked'
+  | 'manual'
+  | 'github-only'
+  | 'missing-project'
+  | 'model-disabled'
+  | 'no-free-slot'
+  | 'guarded'
+
+export type QueueDispatchability = {
+  status: QueueDispatchStatus | string
+  runnable: boolean
+  canDispatchNow: boolean
+  reason: string
+  action: string
+  stale: boolean
+  schedulerWaiting: boolean
 }
 
 export type InboxAction = {
@@ -122,6 +184,7 @@ export type GraphCommunity = {
 
 export type GraphPayload = {
   source: string
+  sourceKind?: 'graphify' | 'generated' | 'generated-summary'
   projectId: string
   missing?: boolean
   generated?: boolean
@@ -175,4 +238,128 @@ export type ProjectOnboarding = {
   queue: Array<{ id: string; title: string; model: ModelId; priority: Priority; stage: string }>
   skills: string[]
   updatedAt: string
+}
+
+export type HealthDailyMetric = {
+  date: string
+  restingHr: number
+  sleepHours: number
+  activeCalories: number
+  trainingMinutes: number
+  readiness: number
+}
+
+export type HealthGoal = {
+  id: string
+  label: string
+  focus: string
+  weeklyTrainingHours: number
+  maintenanceCalories: number
+  targetWeight: number
+}
+
+export type HealthWorkoutPlanDay = {
+  day: string
+  focus: string
+  duration: number
+  intensity: 'easy' | 'moderate' | 'hard' | 'recovery'
+}
+
+export type HealthSyncStatus = {
+  source: 'garmin' | 'strava'
+  connected: boolean
+  authState: string
+  lastSyncStartedAt: string | null
+  lastSuccessAt: string | null
+  cursor: string | null
+  lastError: string | null
+  retryAt: string | null
+  updatedAt: string
+  configured: boolean
+}
+
+export type HealthActivity = {
+  id: string
+  source: 'garmin' | 'strava'
+  source_activity_id: string
+  started_at: string
+  name: string
+  type: string
+  duration_sec: number
+  distance_m?: number | null
+  calories?: number | null
+  avg_hr?: number | null
+  max_hr?: number | null
+}
+
+export type OperationsOverview = {
+  ok: true
+  generatedAt: string
+  summary: {
+    activeProjects: number
+    totalProjects: number
+    openDecisions: number
+    runningTasks: number
+    queuedTasks: number
+    blockedTasks: number
+    liveRuns: number
+    runnableTasks: number
+    manualTasks: number
+    githubOnlyTasks: number
+    attentionPending: number
+    attentionFailed: number
+  }
+  queuePressure: {
+    totalOpen: number
+    runnable: number
+    schedulerWaiting: number
+    blocked: number
+    needsInput: number
+    manual: number
+    githubOnly: number
+    modelDisabled: number
+    noFreeSlot: number
+  }
+  nextAction: {
+    kind: 'resolve-inbox' | 'dispatch-task' | 'review-live-run' | 'clean-queue' | 'idle'
+    title: string
+    reason: string
+    command: string
+    taskId?: string
+    actionId?: string
+    runId?: string
+    project?: string
+    priority?: string
+  } | null
+  projects: Project[]
+  activeProjects: Project[]
+  tasks: QueueTask[]
+  runs: unknown[]
+  liveRuns: unknown[]
+  openDecisions: InboxAction[]
+  telegram: {
+    ready: boolean
+    polling: boolean
+    sessions: unknown[]
+    configuredChat: boolean
+  }
+  attention: {
+    pending: number
+    failed: number
+    sent: number
+  }
+  modelUsage?: ModelUsage[]
+  modelAuth?: ModelAuthStatus[]
+}
+
+export type HealthProfile = {
+  source: 'garmin' | 'strava'
+  connected: boolean
+  lastSync: string
+  weight: number
+  maintenanceCalories: number
+  goalId: string
+  metrics: HealthDailyMetric[]
+  goals: HealthGoal[]
+  weeklyPlan: HealthWorkoutPlanDay[]
 }

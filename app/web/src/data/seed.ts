@@ -1,7 +1,7 @@
-import type { GraphEdge, GraphNode, InboxAction, ModelInfo, Patch, Project, QueueTask } from '../types'
+import type { GraphEdge, GraphNode, HealthProfile, InboxAction, ModelInfo, Patch, Project, QueueTask } from '../types'
 
 export const models: ModelInfo[] = [
-  { id: 'opus', label: 'Claude Opus', vendor: 'Anthropic', tier: 'planning/review', auth: 'claude.ai subscription' },
+  { id: 'opus', label: 'Claude Code', vendor: 'Anthropic', tier: 'planning/review', auth: 'claude.ai subscription' },
   { id: 'spark', label: 'Codex Spark', vendor: 'OpenAI', tier: 'background', auth: 'ChatGPT Pro subscription' },
   { id: 'codex', label: 'Codex GPT-5.5', vendor: 'OpenAI', tier: 'reserved/manual', auth: 'ChatGPT subscription', reserved: true },
 ]
@@ -38,6 +38,44 @@ export const queue: QueueTask[] = [
   { id: 'T-1002', title: 'Read graphify-out/graph.json when present', project: 'northstar', model: 'spark', agent: 'mapper', status: 'queued', progress: 0, priority: 'P1', eta: 'queued', stage: 'waiting for stable API', files: 0, branch: '-' },
   { id: 'T-1003', title: 'Implement real worktree patch review flow', project: 'northstar', model: 'codex', agent: 'builder', status: 'needs-input', progress: 0.24, priority: 'P1', eta: 'blocked', stage: 'needs merge strategy', files: 4, branch: 'agent/worktree-review' },
 ]
+
+export const healthProfile: HealthProfile = {
+  source: 'garmin',
+  connected: false,
+  lastSync: 'Garmin import not connected',
+  weight: 182,
+  maintenanceCalories: 2640,
+  goalId: 'triathlon-base',
+  metrics: [
+    { date: 'May 27', restingHr: 54, sleepHours: 6.7, activeCalories: 680, trainingMinutes: 42, readiness: 0.72 },
+    { date: 'May 28', restingHr: 52, sleepHours: 7.4, activeCalories: 910, trainingMinutes: 58, readiness: 0.81 },
+    { date: 'May 29', restingHr: 55, sleepHours: 6.2, activeCalories: 520, trainingMinutes: 32, readiness: 0.64 },
+    { date: 'May 30', restingHr: 51, sleepHours: 7.8, activeCalories: 1040, trainingMinutes: 74, readiness: 0.84 },
+    { date: 'May 31', restingHr: 53, sleepHours: 7.1, activeCalories: 780, trainingMinutes: 45, readiness: 0.76 },
+    { date: 'Jun 1', restingHr: 50, sleepHours: 8.0, activeCalories: 1120, trainingMinutes: 82, readiness: 0.88 },
+    { date: 'Jun 2', restingHr: 52, sleepHours: 7.0, activeCalories: 740, trainingMinutes: 48, readiness: 0.78 },
+    { date: 'Jun 3', restingHr: 49, sleepHours: 7.6, activeCalories: 980, trainingMinutes: 67, readiness: 0.86 },
+    { date: 'Jun 4', restingHr: 51, sleepHours: 6.9, activeCalories: 830, trainingMinutes: 54, readiness: 0.77 },
+    { date: 'Jun 5', restingHr: 50, sleepHours: 7.7, activeCalories: 1210, trainingMinutes: 88, readiness: 0.87 },
+    { date: 'Jun 6', restingHr: 53, sleepHours: 6.5, activeCalories: 600, trainingMinutes: 35, readiness: 0.69 },
+    { date: 'Jun 7', restingHr: 48, sleepHours: 8.2, activeCalories: 940, trainingMinutes: 62, readiness: 0.9 },
+  ],
+  goals: [
+    { id: 'triathlon-base', label: 'Triathlon base', focus: 'swim · bike · run durability', weeklyTrainingHours: 7, maintenanceCalories: 2640, targetWeight: 178 },
+    { id: 'marathon-build', label: 'Marathon build', focus: 'aerobic volume and long-run economy', weeklyTrainingHours: 6, maintenanceCalories: 2580, targetWeight: 176 },
+    { id: 'frisbee-prep', label: 'Frisbee prep', focus: 'repeat sprint, agility, shoulder resilience', weeklyTrainingHours: 5, maintenanceCalories: 2720, targetWeight: 180 },
+    { id: 'general-health', label: 'General health', focus: 'sleep consistency and steady movement', weeklyTrainingHours: 4, maintenanceCalories: 2480, targetWeight: 182 },
+  ],
+  weeklyPlan: [
+    { day: 'Mon', focus: 'Zone 2 run + mobility', duration: 45, intensity: 'easy' },
+    { day: 'Tue', focus: 'Strength + strides', duration: 55, intensity: 'moderate' },
+    { day: 'Wed', focus: 'Bike intervals', duration: 60, intensity: 'hard' },
+    { day: 'Thu', focus: 'Swim technique', duration: 40, intensity: 'easy' },
+    { day: 'Fri', focus: 'Recovery walk + core', duration: 30, intensity: 'recovery' },
+    { day: 'Sat', focus: 'Long aerobic session', duration: 90, intensity: 'moderate' },
+    { day: 'Sun', focus: 'Optional sport play', duration: 60, intensity: 'moderate' },
+  ],
+}
 
 export const actions: InboxAction[] = [
   { id: 'A-01', type: 'question', project: 'northstar', task: 'T-1003', model: 'codex', priority: 'P1', ago: 'now', urgency: 'high', title: 'Should approve locally squash or preserve branch history?', ctx: 'Patch Review can prepare either a squash merge or preserve the agent branch. No push happens in v1.', options: ['Squash into base', 'Preserve branch commits', 'Ask per patch'], recommend: 0, help: 'Squash keeps autonomous work reviewable and avoids noisy agent history while the workflow is still settling.' },

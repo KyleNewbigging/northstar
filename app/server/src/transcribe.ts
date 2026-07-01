@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
-import { rm, readFile, writeFile, mkdtemp } from 'node:fs/promises'
+import { mkdir, rm, readFile, writeFile, mkdtemp } from 'node:fs/promises'
 import { spawn, spawnSync } from 'node:child_process'
-import { tmpdir } from 'node:os'
+import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 
@@ -9,9 +9,11 @@ type WhisperTranscriptionResult =
   | { ok: true; text: string }
   | { ok: false; reason: string; details?: string }
 
-const WHISPER_COMMAND = process.env.WHISPER_COMMAND?.trim() || 'whisper'
+const northstarWhisperCommand = join(homedir(), '.northstar', 'whisper-venv', 'bin', 'whisper')
+const WHISPER_COMMAND = process.env.WHISPER_COMMAND?.trim() || (existsSync(northstarWhisperCommand) ? northstarWhisperCommand : 'whisper')
 const WHISPER_MODEL = process.env.WHISPER_MODEL?.trim() || 'base.en'
 const WHISPER_LANGUAGE = process.env.WHISPER_LANGUAGE?.trim() || 'en'
+const WHISPER_MODEL_DIR = process.env.WHISPER_MODEL_DIR?.trim() || join(homedir(), '.northstar', 'whisper-cache')
 
 let whisperAvailableCache: boolean | null = null
 
@@ -29,7 +31,7 @@ function mimeToExt(mimeType?: string | null): string {
 function hasWhisperBinary(): boolean {
   if (whisperAvailableCache !== null) return whisperAvailableCache
   try {
-    const probe = spawnSync(WHISPER_COMMAND, ['--help'], { stdio: 'ignore', timeout: 1500 })
+    const probe = spawnSync(WHISPER_COMMAND, ['--help'], { stdio: 'ignore', timeout: 5000 })
     whisperAvailableCache = (probe.status === 0) || (probe.status === 1)
   } catch {
     whisperAvailableCache = false
@@ -71,11 +73,12 @@ export async function transcribeWithWhisper(audioBase64: string, mimeType?: stri
   const stem = randomUUID()
   const ext = mimeToExt(mimeType)
   const audioPath = join(workDir, `${stem}.${ext}`)
-  const outputPath = `${audioPath}.txt`
+  const outputPath = join(workDir, `${stem}.txt`)
 
   try {
     const audioBuffer = Buffer.from(audioBase64, 'base64')
     if (audioBuffer.length === 0) return { ok: false, reason: 'empty_audio' }
+    await mkdir(WHISPER_MODEL_DIR, { recursive: true })
     await writeFile(audioPath, audioBuffer)
 
     const args = [
@@ -83,6 +86,8 @@ export async function transcribeWithWhisper(audioBase64: string, mimeType?: stri
       WHISPER_LANGUAGE,
       '--model',
       WHISPER_MODEL,
+      '--model_dir',
+      WHISPER_MODEL_DIR,
       '--output_format',
       'txt',
       audioPath,
