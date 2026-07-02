@@ -332,6 +332,8 @@ const defaultDigestWindowMs = 120_000
 const defaultMaxTelegramDocumentBytes = Number(process.env.NORTHSTAR_TELEGRAM_MAX_DOCUMENT_BYTES ?? '20000000')
 const defaultMaxTelegramDocumentPromptChars = Number(process.env.NORTHSTAR_TELEGRAM_MAX_DOCUMENT_PROMPT_CHARS ?? '150000')
 const telegramDigestWindowMs = Math.max(1_000, Number(process.env.NORTHSTAR_TELEGRAM_DIGEST_WINDOW_MS ?? defaultDigestWindowMs))
+const telegramStaleInboxAgeMs = Math.max(60_000, Number(process.env.NORTHSTAR_TELEGRAM_STALE_INBOX_AGE_MS ?? 4 * 60 * 60 * 1000))
+const telegramStaleInboxCooldownMs = Math.max(60_000, Number(process.env.NORTHSTAR_TELEGRAM_STALE_INBOX_COOLDOWN_MS ?? 6 * 60 * 60 * 1000))
 const pdfToTextCommand = process.env.NORTHSTAR_PDF_TO_TEXT_COMMAND?.trim() || 'pdftotext'
 
 export const telegramCommandNames = [
@@ -778,7 +780,10 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
     const settings = getTelegramBridgeSettings(db)
     if (!isNotificationReady(settings)) return
     const snapshot = options.getSnapshot()
-    if (settings.notifyImportant && settings.notifyInbox) await notifyActions(db, settings, snapshot.actions, { importantOnly: !isDebugEnabled(settings) })
+    if (settings.notifyImportant && settings.notifyInbox) {
+      await notifyActions(db, settings, snapshot.actions, { importantOnly: !isDebugEnabled(settings) })
+      await notifyStaleInbox(db, settings)
+    }
     if (snapshot.runs.length) {
       const tasks = parsePayloadTasks(snapshot)
       const runs = parsePayloadRuns(snapshot)
@@ -1950,6 +1955,56 @@ async function notifyActions(db: DatabaseSync, settings: TelegramBridgeSettings,
       recordDelivery(db, settings.chatId, 'inbox_action', key, 'failed', null, errorMessage(error))
       recordTelegramError(db, errorMessage(error))
     }
+  }
+}
+
+async function notifyStaleInbox(db: DatabaseSync, settings: TelegramBridgeSettings) {
+  const token = readTelegramBotToken()
+  if (!token || !settings.chatId) return
+
+  // Throttle: at most one stale-inbox reminder per cooldown window per chat.
+  const recentReminder = db
+    .prepare(
+      `SELECT 1 FROM telegram_delivery_log
+       WHERE event_type = 'stale_inbox' AND chat_id = ? AND status = 'sent'
+         AND updated_at > datetime('now', ?)
+       LIMIT 1`,
+    )
+    .get(settings.chatId, `-${Math.round(telegramStaleInboxCooldownMs / 1000)} seconds`)
+  if (recentReminder) return
+
+  // Stale = still unresolved and first notified longer than the age window ago.
+  // inbox_actions has no created_at; the original inbox_action delivery is the age anchor.
+  const stale = db
+    .prepare(
+      `SELECT ia.id, ia.priority, ia.title
+       FROM inbox_actions ia
+       JOIN telegram_delivery_log dl
+         ON dl.event_type = 'inbox_action' AND dl.event_key = ia.id AND dl.chat_id = ? AND dl.status = 'sent'
+       WHERE ia.resolved_at IS NULL
+         AND dl.updated_at <= datetime('now', ?)
+       ORDER BY dl.updated_at
+       LIMIT 5`,
+    )
+    .all(settings.chatId, `-${Math.round(telegramStaleInboxAgeMs / 1000)} seconds`) as Array<{ id: string; priority: string; title: string }>
+  if (!stale.length) return
+
+  const total = (db
+    .prepare('SELECT COUNT(*) AS count FROM inbox_actions WHERE resolved_at IS NULL')
+    .get() as { count: number }).count
+  const lines = [
+    `Polaris reminder: ${total} inbox item${total === 1 ? '' : 's'} still waiting on you.`,
+    ...stale.map((action) => `- ${action.priority} ${action.title.replace(/\s+/g, ' ').trim().slice(0, 70)} -> /resolve ${action.id} 1`),
+    total > stale.length ? `...and ${total - stale.length} more. Use /overview for the full list.` : 'Reply with /resolve ID CHOICE to keep the loop moving.',
+  ]
+
+  const eventKey = `stale:${Date.now()}`
+  try {
+    const sent = await sendMessage(token, settings.chatId, lines.join('\n'))
+    recordDelivery(db, settings.chatId, 'stale_inbox', eventKey, 'sent', sent.message_id)
+  } catch (error) {
+    recordDelivery(db, settings.chatId, 'stale_inbox', eventKey, 'failed', null, errorMessage(error))
+    recordTelegramError(db, errorMessage(error))
   }
 }
 
