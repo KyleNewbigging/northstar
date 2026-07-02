@@ -652,7 +652,7 @@ function normalizeInboxChoice(rawChoice: string, options: string[]) {
 function resolveTelegramPromptTask(taskId: string | null | undefined, choice: string, options: string[]) {
   if (!taskId || !isTelegramPromptOptions(options)) return null
   const resolution = telegramPromptChoiceModels[choice]
-  if (!resolution) return null
+  if (!resolution) return reviseTelegramPromptTask(taskId, choice)
   if (resolution === 'discard') {
     db.prepare(
       `UPDATE tasks
@@ -679,6 +679,29 @@ function resolveTelegramPromptTask(taskId: string | null | undefined, choice: st
      WHERE id = ? AND status != 'running'`,
   ).run(resolution, telegramApprovalStage(resolution), taskId)
   return { taskId, status: 'queued', model: resolution }
+}
+
+function reviseTelegramPromptTask(taskId: string, prompt: string) {
+  const nextPrompt = prompt.trim()
+  if (!nextPrompt) return null
+  const row = db
+    .prepare("SELECT model, source, status FROM tasks WHERE id = ?")
+    .get(taskId) as { model?: DispatchModel; source?: string; status?: string } | undefined
+  if (!row || row.source !== 'telegram' || row.status === 'running' || row.status === 'done') return null
+  const model = row.model ?? telegramAutomationModel
+  db.prepare(
+    `UPDATE tasks
+     SET status = 'queued',
+       title = ?,
+       prompt = ?,
+       progress = 0.1,
+       eta = 'next window',
+       stage = ?,
+       updated_at = CURRENT_TIMESTAMP,
+       completed_at = NULL
+     WHERE id = ?`,
+  ).run(`Telegram: ${singleLine(nextPrompt).slice(0, 110)}`, nextPrompt, telegramApprovalStage(model), taskId)
+  return { taskId, status: 'queued', model, promptUpdated: true }
 }
 
 function telegramApprovalStage(model: DispatchModel) {
@@ -744,12 +767,51 @@ function queueTelegramPrompt(input: { text: string; session: TelegramSession; me
   const model = telegramAutomationModel
   const lane = inferTelegramLane(input.session.model, input.session.agent)
   const laneWarning = inferLaneMismatchWarning(input.session.model, input.session.agent)
+  const taskAgent = cleanTaskAgent(input.session.agent)
+
+  if (isLowIntentTelegramPrompt(prompt)) {
+    const actionId = `TG-ASK-${idStem}`
+    const options = ['Queue Codex worktree', 'Queue Spark worktree', 'Queue Claude plan', 'Discard']
+    db.prepare(
+      `INSERT INTO tasks
+        (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at)
+       VALUES (?, ?, ?, ?, ?, 'needs-input', 'P2', 0, 'needs input', 'Telegram greeting needs a concrete task', 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
+    ).run(taskId, routed.projectId, title, model, taskAgent, sourceRef, prompt)
+    db.prepare(
+      `INSERT OR IGNORE INTO inbox_actions
+        (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
+       VALUES (?, ?, ?, 'question', ?, 'P2', 'med', ?, ?, ?, ?, ?)`,
+    ).run(
+      actionId,
+      routed.projectId,
+      taskId,
+      model,
+      'Clarify Telegram request before dispatch',
+      `Telegram sent "${singleLine(prompt)}", which is too small to safely spend a reserved local agent run. No CLI process has started.`,
+      JSON.stringify(options),
+      3,
+      'Type the actual request in the custom response box to replace the vague prompt and queue it, or discard this greeting.',
+    )
+    const task = queueTaskById(taskId)
+    return {
+      ok: true as const,
+      taskId,
+      actionId,
+      project: routed.projectId,
+      model,
+      status: task?.status ?? 'needs-input',
+      autoDispatched: false,
+      dispatch: undefined,
+      lane,
+      laneWarning,
+    }
+  }
 
   db.prepare(
     `INSERT INTO tasks
       (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at)
      VALUES (?, ?, ?, ?, ?, 'queued', 'P1', 0.1, 'now', ?, 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
-  ).run(taskId, routed.projectId, title, model, cleanTaskAgent(input.session.agent), telegramApprovalStage(model), sourceRef, prompt)
+  ).run(taskId, routed.projectId, title, model, taskAgent, telegramApprovalStage(model), sourceRef, prompt)
 
   const dispatch = input.autoDispatch ? dispatchQueuedTask(taskId, { manualApproval: true }) : undefined
   const task = queueTaskById(taskId)
@@ -849,6 +911,15 @@ function inferLaneMismatchWarning(model: string, agent: string) {
   const laneByAgent = normalizedAgent === 'personal' ? 'personal' : 'orchestrator'
   if (laneByModel === laneByAgent || !normalizedAgent) return null
   return `Lane guard: model ${normalizedModel || 'unknown'} usually maps to ${laneByModel} lane, while agent ${normalizedAgent || 'unknown'} maps to ${laneByAgent} lane.`
+}
+
+function isLowIntentTelegramPrompt(value: string) {
+  const normalized = value
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+  return /^(hi|hello|hey|yo|ping|test|start)( northstar| polaris)?$/.test(normalized)
 }
 
 function cleanSessionToken(value: unknown) {
