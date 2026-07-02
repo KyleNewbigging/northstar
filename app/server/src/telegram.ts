@@ -2778,6 +2778,7 @@ function buildProjectWorkspaceMessage(result: ProjectWorkspaceResult) {
     'Core files:',
     `CLAUDE.md: ${result.files.claude}`,
     `AGENTS.md: ${result.files.agents}`,
+    `agent-profile.md: ${result.files.agentProfile}`,
     `implementation.md: ${result.files.implementation}`,
     `.claude: ${result.files.dotClaude}`,
     `resources: ${result.files.resources}`,

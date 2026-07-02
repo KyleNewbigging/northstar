@@ -32,6 +32,8 @@ Northstar keeps project-specific learned skills out of git under `~/.northstar/s
 
 When the Dropbox device file bridge is configured, Northstar mirrors the canonical skills file to `Dropbox/projects/<project-id>/skills/northstar-skills.md`. That Dropbox copy is generated/read-only in v1; edits there are not reverse-synced.
 
+Dropbox project workspaces also carry `CLAUDE.md`, `AGENTS.md`, `agent-profile.md`, and `implementation.md`. Northstar manages a small marked project-agent section inside those guidance files so `/project` and `/use` can refine the default per-project agent contract without overwriting hand-written notes.
+
 ## Current Mac Reliability
 
 The first always-on target is the current Mac workspace. Keep both services bound to loopback, keep private runtime files under `~/.northstar`, and let `tmux` preserve spawned CLI runs across browser or server restarts. The heartbeat at `~/.northstar/heartbeat.md` is the local status artifact, and it mirrors to `Dropbox/heartbeat.md` when Dropbox is configured.
@@ -333,6 +335,7 @@ Dropbox/
   projects/<repo>/
     CLAUDE.md
     AGENTS.md
+    agent-profile.md
     implementation.md
     .claude/
     handoffs/

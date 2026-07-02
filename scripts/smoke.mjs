@@ -51,6 +51,7 @@ async function main() {
   const attentionAlerts = await runAttentionAlertSmoke()
   const garminImport = await runGarminImportSmoke()
   const skillsMirror = runProjectSkillsMirrorSmoke()
+  const workspaceTemplate = runProjectWorkspaceTemplateSmoke()
 
   assert(health.ok === true, 'health endpoint failed')
   assert(Array.isArray(projects.projects) && projects.projects.length > 0, 'no projects discovered')
@@ -97,6 +98,7 @@ async function main() {
     attentionAlerts,
     garminImport,
     skillsMirror,
+    workspaceTemplate,
     graph: { nodes: allGraph.nodes.length, edges: allGraph.edges.length },
     focusedGraph: { project: focusId, nodes: focusedGraph.nodes.length, edges: focusedGraph.edges.length },
   }
@@ -1168,6 +1170,56 @@ function runProjectSkillsMirrorSmoke() {
   if (result.status !== 0) {
     const detail = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
     throw new Error(`project skills mirror smoke failed: ${detail}`)
+  }
+  return { ok: true }
+}
+
+function runProjectWorkspaceTemplateSmoke() {
+  const tempRoot = mkdtempSync(join(tmpdir(), 'northstar-workspace-smoke-'))
+  const script = `
+    import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+    import { join } from 'node:path';
+
+    const tempRoot = ${JSON.stringify(tempRoot)};
+    const dropbox = join(tempRoot, 'dropbox');
+    mkdirSync(dropbox, { recursive: true });
+    process.env.NORTHSTAR_DROPBOX_ROOT = dropbox;
+
+    const mod = await import(${JSON.stringify(pathToFileURL(join(process.cwd(), 'app/server/src/deviceFiles.ts')).href)});
+    const fresh = mod.ensureProjectWorkspace({ project: 'workspace-smoke', repoPath: '/tmp/workspace-smoke' });
+    if (!fresh.ok) throw new Error(fresh.error);
+    const profile = join(dropbox, fresh.files.agentProfile);
+    const claude = join(dropbox, fresh.files.claude);
+    const agents = join(dropbox, fresh.files.agents);
+    const implementation = join(dropbox, fresh.files.implementation);
+    if (!existsSync(profile)) throw new Error('agent-profile.md was not created');
+    if (!readFileSync(profile, 'utf8').includes('Default lane: codex orchestrator')) throw new Error('agent profile routing guidance is missing');
+    if (!readFileSync(claude, 'utf8').includes('<!-- northstar:project-agent:start -->')) throw new Error('CLAUDE.md managed section is missing');
+    if (!readFileSync(agents, 'utf8').includes('One run means one queued task')) throw new Error('AGENTS.md agent contract is missing');
+    if (!readFileSync(implementation, 'utf8').includes('Northstar Orchestration Notes')) throw new Error('implementation orchestration notes are missing');
+
+    const legacyDir = join(dropbox, 'projects', 'legacy-smoke');
+    mkdirSync(legacyDir, { recursive: true });
+    writeFileSync(join(legacyDir, 'CLAUDE.md'), '# Custom Claude\\n\\nKeep this note.\\n');
+    writeFileSync(join(legacyDir, 'AGENTS.md'), '# Custom Agents\\n\\nKeep this contract.\\n');
+    writeFileSync(join(legacyDir, 'implementation.md'), '# Custom Plan\\n\\nKeep this plan.\\n');
+    const legacy = mod.ensureProjectWorkspace({ project: 'legacy-smoke', repoPath: '/tmp/legacy-smoke' });
+    if (!legacy.ok) throw new Error(legacy.error);
+    const legacyClaude = readFileSync(join(dropbox, legacy.files.claude), 'utf8');
+    if (!legacyClaude.includes('Keep this note.') || !legacyClaude.includes('Northstar Project Agent')) {
+      throw new Error('legacy CLAUDE.md was not preserved and refined');
+    }
+    rmSync(tempRoot, { recursive: true, force: true });
+  `
+  const result = spawnSync(process.execPath, ['--import', 'tsx', '--input-type=module', '--eval', script], {
+    cwd: process.cwd(),
+    encoding: 'utf8',
+    env: { ...process.env },
+  })
+  if (existsSync(tempRoot)) rmSync(tempRoot, { recursive: true, force: true })
+  if (result.status !== 0) {
+    const detail = `${result.stdout ?? ''}${result.stderr ?? ''}`.trim()
+    throw new Error(`project workspace template smoke failed: ${detail}`)
   }
   return { ok: true }
 }

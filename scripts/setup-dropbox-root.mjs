@@ -44,6 +44,7 @@ if (!root) {
 
   ensureFile(join(projectRoot, 'CLAUDE.md'), claudeTemplate(project, repoPath), created)
   ensureFile(join(projectRoot, 'AGENTS.md'), agentsTemplate(project, repoPath), created)
+  ensureFile(join(projectRoot, 'agent-profile.md'), agentProfileTemplate(project, repoPath), created)
   ensureFile(join(projectRoot, 'implementation.md'), implementationTemplate(project, repoPath), created)
   ensureFile(join(projectRoot, '.claude', 'README.md'), dotClaudeTemplate(project), created)
 
@@ -108,6 +109,15 @@ function claudeTemplate(project, repoPath) {
     `- Name: ${project}`,
     `- Local checkout: ${repoPath}`,
     '',
+    '## Northstar Project Agent',
+    '',
+    `- Agent identity: ${project} project agent.`,
+    '- Source order: repo AGENTS.md, this CLAUDE.md, implementation.md, handoffs/resources/sessions, then generated skills mirrors.',
+    '- Use this file for durable project memory: product constraints, user preferences, recurring commands, and known traps.',
+    '- Keep implementation edits in the local git checkout or isolated Northstar worktree; keep Dropbox for support files and handoffs.',
+    '- For coding work, prefer `/use PROJECT codex orchestrator`; use `spark personal` for quick planning and `opus` as plan-only unless Northstar changes that contract.',
+    '- When blocked, ask the smallest useful question and offer two or three concrete options.',
+    '',
   ].join('\n')
 }
 
@@ -120,6 +130,41 @@ function agentsTemplate(project, repoPath) {
     `- Local checkout: ${repoPath}`,
     '- Repo sync remains GitHub.',
     '- Session/support sync uses this Dropbox root.',
+    '',
+    '## Northstar Agent Contract',
+    '',
+    '- One run means one queued task, one isolated worktree, and one local CLI process.',
+    '- Inspect current state before acting: git status, live queue state, project-local instructions, and the newest concise handoff when available.',
+    '- Merge duplicate continuation requests instead of creating more queue noise; repeated identical scan files are a loop signal.',
+    '- Agents may create patches, notes, and questions; they do not push or commit without explicit user approval.',
+    '- Final summaries should teach: what changed, why that approach was chosen, what the user can learn, verification status, blockers, and the smallest next decision.',
+    '',
+  ].join('\n')
+}
+
+function agentProfileTemplate(project, repoPath) {
+  return [
+    `# Project Agent Profile: ${project}`,
+    '',
+    'This file names the default agent identity for the Dropbox project workspace. Keep it short enough for future agents to scan quickly.',
+    '',
+    '## Identity',
+    '',
+    `- Project: ${project}`,
+    `- Local checkout: ${repoPath}`,
+    '- Default lane: codex orchestrator for implementation, spark personal for short planning, opus for plan-only review.',
+    '',
+    '## Responsibilities',
+    '',
+    '- Keep project-specific memory close to this workspace.',
+    '- Preserve boundaries between git-owned source code and Dropbox-owned support artifacts.',
+    '- Turn Telegram requests into concrete queue work, patch artifacts, handoffs, or concise questions.',
+    '- Explain results in a way that helps the operator decide the next action.',
+    '',
+    '## Review Gates',
+    '',
+    '- Risky operations stay gated: patch apply, commits, pushes, deletes, and reserved model dispatch.',
+    '- Private runtime data belongs under ~/.northstar, not in this Dropbox folder or the repo.',
     '',
   ].join('\n')
 }
@@ -134,6 +179,12 @@ function implementationTemplate(project, repoPath) {
     '',
     `- Repo checkout: ${repoPath}`,
     '- Dropbox folder: this project workspace.',
+    '',
+    '## Northstar Orchestration Notes',
+    '',
+    '- Keep the top three next implementation decisions current enough for Telegram and future agents to resume without replaying old threads.',
+    '- Prefer updating existing handoffs or notes when queue state has not materially changed.',
+    '- Record durable lessons as `Learning candidate:` lines in agent final summaries so Northstar can review them for the project skills file.',
     '',
     '## Next Steps',
     '',

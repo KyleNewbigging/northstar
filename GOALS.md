@@ -29,6 +29,7 @@ Dropbox/
   projects/<repo>/
     CLAUDE.md
     AGENTS.md
+    agent-profile.md
     implementation.md
     .claude/
     handoffs/

@@ -110,6 +110,7 @@ export type ProjectWorkspaceResult =
       files: {
         claude: string
         agents: string
+        agentProfile: string
         implementation: string
         dotClaude: string
         resources: string
@@ -367,6 +368,7 @@ export function ensureProjectWorkspace(input: { project?: string; repoPath?: str
   const files = {
     claude: join(projectDir, 'CLAUDE.md'),
     agents: join(projectDir, 'AGENTS.md'),
+    agentProfile: join(projectDir, 'agent-profile.md'),
     implementation: join(projectDir, 'implementation.md'),
     dotClaude: join(projectDir, '.claude'),
     resources: join(projectDir, 'resources'),
@@ -383,8 +385,12 @@ export function ensureProjectWorkspace(input: { project?: string; repoPath?: str
   ensureDir(files.sessions, root.rootRealPath, created)
   ensureFile(files.claude, projectTemplate('CLAUDE.md', project, input.repoPath, input.note), root.rootRealPath, created)
   ensureFile(files.agents, projectTemplate('AGENTS.md', project, input.repoPath, input.note), root.rootRealPath, created)
+  ensureFile(files.agentProfile, agentProfileTemplate(project, input.repoPath), root.rootRealPath, created)
   ensureFile(files.implementation, implementationTemplate(project, input.repoPath), root.rootRealPath, created)
   ensureFile(join(files.dotClaude, 'README.md'), dotClaudeTemplate(project), root.rootRealPath, created)
+  ensureManagedSection(files.claude, claudeManagedSection(project, input.repoPath), root.rootRealPath, created)
+  ensureManagedSection(files.agents, agentsManagedSection(project, input.repoPath), root.rootRealPath, created)
+  ensureManagedSection(files.implementation, implementationManagedSection(project, input.repoPath), root.rootRealPath, created)
 
   return {
     ok: true,
@@ -396,6 +402,7 @@ export function ensureProjectWorkspace(input: { project?: string; repoPath?: str
     files: {
       claude: toRelPath(root.rootRealPath, files.claude),
       agents: toRelPath(root.rootRealPath, files.agents),
+      agentProfile: toRelPath(root.rootRealPath, files.agentProfile),
       implementation: toRelPath(root.rootRealPath, files.implementation),
       dotClaude: toRelPath(root.rootRealPath, files.dotClaude),
       resources: toRelPath(root.rootRealPath, files.resources),
@@ -549,6 +556,10 @@ function slug(value: string) {
   return cleanProjectId(value.toLowerCase()) || 'resource'
 }
 
+function escapeRegExp(value: string) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
 function currentDeviceId() {
   return cleanDeviceId(process.env.NORTHSTAR_DEVICE_ID) || cleanDeviceId(hostname()) || 'northstar-device'
 }
@@ -582,6 +593,22 @@ function ensureFile(path: string, content: string, rootRealPath: string, created
   created.push(toRelPath(rootRealPath, path))
 }
 
+function ensureManagedSection(path: string, section: string, rootRealPath: string, created: string[]) {
+  const current = readFileSync(path, 'utf8')
+  const start = '<!-- northstar:project-agent:start -->'
+  const end = '<!-- northstar:project-agent:end -->'
+  const block = `${start}\n${section.trim()}\n${end}`
+  const pattern = new RegExp(`${escapeRegExp(start)}[\\s\\S]*?${escapeRegExp(end)}`)
+  const next = pattern.test(current)
+    ? current.replace(pattern, block)
+    : `${current.trimEnd()}\n\n${block}\n`
+
+  if (next === current) return
+  writeFileSync(path, next, { mode: 0o600 })
+  const relPath = toRelPath(rootRealPath, path)
+  if (!created.includes(relPath)) created.push(`${relPath} (updated)`)
+}
+
 function projectTemplate(kind: 'CLAUDE.md' | 'AGENTS.md', project: string, repoPath?: string, note?: string) {
   const title = kind === 'CLAUDE.md' ? 'Claude Project Memory' : 'Agent Project Guide'
   return [
@@ -608,6 +635,63 @@ function projectTemplate(kind: 'CLAUDE.md' | 'AGENTS.md', project: string, repoP
   ].join('\n')
 }
 
+function claudeManagedSection(project: string, repoPath?: string) {
+  return [
+    '## Northstar Project Agent',
+    '',
+    `- Agent identity: ${project} project agent.`,
+    `- Local checkout: ${repoPath?.trim() || 'machine-specific local clone, not Dropbox'}.`,
+    '- Source order: repo AGENTS.md, this CLAUDE.md, implementation.md, handoffs/resources/sessions, then generated skills mirrors.',
+    '- Use this file for durable project memory: product constraints, user preferences, recurring commands, and known traps.',
+    '- Keep implementation edits in the local git checkout or isolated Northstar worktree; keep Dropbox for support files and handoffs.',
+    '- For coding work, prefer `/use PROJECT codex orchestrator`; use `spark personal` for quick planning and `opus` as plan-only unless Northstar changes that contract.',
+    '- When blocked, ask the smallest useful question and offer two or three concrete options.',
+    '',
+  ].join('\n')
+}
+
+function agentsManagedSection(project: string, repoPath?: string) {
+  return [
+    '## Northstar Agent Contract',
+    '',
+    `- Project: ${project}.`,
+    `- Repo checkout: ${repoPath?.trim() || 'machine-specific local clone, not Dropbox'}.`,
+    '- One run means one queued task, one isolated worktree, and one local CLI process.',
+    '- Inspect current state before acting: git status, live queue state, project-local instructions, and the newest concise handoff when available.',
+    '- Merge duplicate continuation requests instead of creating more queue noise; repeated identical scan files are a loop signal.',
+    '- Agents may create patches, notes, and questions; they do not push or commit without explicit user approval.',
+    '- Final summaries should teach: what changed, why that approach was chosen, what the user can learn, verification status, blockers, and the smallest next decision.',
+    '',
+  ].join('\n')
+}
+
+function agentProfileTemplate(project: string, repoPath?: string) {
+  return [
+    `# Project Agent Profile: ${project}`,
+    '',
+    'This file names the default agent identity for the Dropbox project workspace. Keep it short enough for future agents to scan quickly.',
+    '',
+    '## Identity',
+    '',
+    `- Project: ${project}`,
+    `- Local checkout: ${repoPath?.trim() || 'machine-specific local clone, not Dropbox'}`,
+    '- Default lane: codex orchestrator for implementation, spark personal for short planning, opus for plan-only review.',
+    '',
+    '## Responsibilities',
+    '',
+    '- Keep project-specific memory close to this workspace.',
+    '- Preserve boundaries between git-owned source code and Dropbox-owned support artifacts.',
+    '- Turn Telegram requests into concrete queue work, patch artifacts, handoffs, or concise questions.',
+    '- Explain results in a way that helps the operator decide the next action.',
+    '',
+    '## Review Gates',
+    '',
+    '- Risky operations stay gated: patch apply, commits, pushes, deletes, and reserved model dispatch.',
+    '- Private runtime data belongs under ~/.northstar, not in this Dropbox folder or the repo.',
+    '',
+  ].join('\n')
+}
+
 function implementationTemplate(project: string, repoPath?: string) {
   return [
     `# ${project} Implementation`,
@@ -627,6 +711,19 @@ function implementationTemplate(project: string, repoPath?: string) {
     '## Next Steps',
     '',
     '- Decide the next task.',
+    '',
+  ].join('\n')
+}
+
+function implementationManagedSection(project: string, repoPath?: string) {
+  return [
+    '## Northstar Orchestration Notes',
+    '',
+    `- Project workspace: ${project}.`,
+    `- Code source: ${repoPath?.trim() || 'machine-specific local clone, not Dropbox'}.`,
+    '- Keep the top three next implementation decisions current enough for Telegram and future agents to resume without replaying old threads.',
+    '- Prefer updating existing handoffs or notes when queue state has not materially changed.',
+    '- Record durable lessons as `Learning candidate:` lines in agent final summaries so Northstar can review them for the project skills file.',
     '',
   ].join('\n')
 }
