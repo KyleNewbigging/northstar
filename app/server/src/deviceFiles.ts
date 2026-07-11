@@ -3,6 +3,7 @@ import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSy
 import { homedir, hostname } from 'node:os'
 import { basename, dirname, extname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import type { DatabaseSync } from 'node:sqlite'
+import { spawnSync } from 'node:child_process'
 
 export type DeviceFileKind = 'directory' | 'file' | 'symlink' | 'other'
 
@@ -131,10 +132,28 @@ export type ProjectResourceResult =
     }
   | DeviceFileError
 
+export type ContentMatch = {
+  relPath: string
+  line: number
+  snippet: string
+}
+
+export type DeviceFileContentSearchResult =
+  | {
+      ok: true
+      status: DeviceFilesStatus
+      query: string
+      engine: 'ripgrep' | 'node'
+      results: ContentMatch[]
+      truncated: boolean
+    }
+  | DeviceFileError
+
 export type DeviceFileActions = {
   status: () => DeviceFilesStatus
   list: (input?: { path?: string; limit?: number; includeHidden?: boolean }) => DeviceFileListResult
   search: (input: { query?: string; limit?: number; maxVisited?: number }) => DeviceFileSearchResult
+  searchContent: (input: { query?: string; limit?: number; maxVisited?: number }) => DeviceFileContentSearchResult
   preview: (input: { path?: string; maxChars?: number }) => DeviceFilePreviewResult
   createHandoff: (input: { targetDevice?: string; path?: string; note?: string }) => DeviceHandoffResult
   listHandoffs: (input?: { targetDevice?: string; limit?: number }) => DeviceHandoffListResult
@@ -176,6 +195,7 @@ export function createDeviceFileActions(db: DatabaseSync): DeviceFileActions {
     status: () => getDeviceFilesStatus(),
     list: (input) => listDeviceFiles(input),
     search: (input) => searchDeviceFiles(input),
+    searchContent: (input) => searchDeviceFileContents(input),
     preview: (input) => previewDeviceFile(input),
     createHandoff: (input) => createDeviceHandoff(db, input),
     listHandoffs: (input) => listDeviceHandoffs(input),
@@ -267,6 +287,127 @@ export function searchDeviceFiles(input: { query?: string; limit?: number; maxVi
 
   if (stack.length || visited >= maxVisited) truncated = true
   return { ok: true, status: root.status, query, results, visited, truncated }
+}
+
+const CONTENT_MAX_FILE_BYTES = 1_000_000
+const CONTENT_MAX_MATCHES_PER_FILE = 3
+const CONTENT_SNIPPET_MAX = 200
+
+function resolveRipgrepBin(): string | null {
+  const envBin = process.env.NORTHSTAR_RIPGREP_BIN?.trim()
+  if (envBin) return envBin
+  const probe = spawnSync('rg', ['--version'], { encoding: 'utf8', timeout: 3000 })
+  return probe.status === 0 ? 'rg' : null
+}
+
+function parseRipgrepOutput(output: string, rootRealPath: string, limit: number): { results: ContentMatch[]; truncated: boolean } {
+  const results: ContentMatch[] = []
+  for (const raw of output.split('\n')) {
+    if (!raw.trim()) continue
+    const first = raw.indexOf(':')
+    if (first < 0) continue
+    const second = raw.indexOf(':', first + 1)
+    if (second < 0) continue
+    const filePath = raw.slice(0, first)
+    const lineNum = Number(raw.slice(first + 1, second))
+    const text = raw.slice(second + 1)
+    if (!Number.isFinite(lineNum)) continue
+    results.push({
+      relPath: toRelPath(rootRealPath, filePath),
+      line: lineNum,
+      snippet: text.trim().slice(0, CONTENT_SNIPPET_MAX),
+    })
+    if (results.length >= limit) return { results, truncated: true }
+  }
+  return { results, truncated: false }
+}
+
+function searchContentNode(rootRealPath: string, query: string, limit: number, maxVisited: number): { results: ContentMatch[]; truncated: boolean } {
+  const needle = query.toLowerCase()
+  const results: ContentMatch[] = []
+  const stack: Array<{ path: string; depth: number }> = [{ path: rootRealPath, depth: 0 }]
+  let visited = 0
+  let limitHit = false
+
+  while (stack.length && results.length < limit && visited < maxVisited) {
+    const current = stack.pop()
+    if (!current) break
+    visited += 1
+    let entries: string[]
+    try {
+      entries = readdirSync(current.path)
+    } catch {
+      continue
+    }
+
+    for (const name of entries) {
+      if (shouldSkipSearchName(name)) continue
+      const fullPath = join(current.path, name)
+      if (extname(name).toLowerCase() === '.md') {
+        let stat: ReturnType<typeof safeStat>
+        try {
+          stat = statSync(fullPath)
+        } catch {
+          continue
+        }
+        if (stat && stat.isFile() && stat.size <= CONTENT_MAX_FILE_BYTES) {
+          let text: string
+          try {
+            text = readFileSync(fullPath, 'utf8')
+          } catch {
+            continue
+          }
+          const relPath = toRelPath(rootRealPath, fullPath)
+          let fileMatches = 0
+          const lines = text.split('\n')
+          for (let i = 0; i < lines.length; i++) {
+            if (lines[i].toLowerCase().includes(needle)) {
+              results.push({ relPath, line: i + 1, snippet: lines[i].trim().slice(0, CONTENT_SNIPPET_MAX) })
+              fileMatches += 1
+              if (fileMatches >= CONTENT_MAX_MATCHES_PER_FILE || results.length >= limit) {
+                if (results.length >= limit) limitHit = true
+                break
+              }
+            }
+          }
+          if (results.length >= limit) break
+        }
+      } else {
+        const entryKind = kindForPath(fullPath)
+        if (entryKind === 'directory' && current.depth < 8) stack.push({ path: fullPath, depth: current.depth + 1 })
+      }
+    }
+  }
+
+  const truncated = limitHit || stack.length > 0 || visited >= maxVisited
+  return { results, truncated }
+}
+
+export function searchDeviceFileContents(input: { query?: string; limit?: number; maxVisited?: number }): DeviceFileContentSearchResult {
+  const root = requireDropboxRoot()
+  if (!root.ok) return root
+  const query = input.query?.trim()
+  if (!query) return fileError('query_required', 'Usage: provide a content search query.', root.status)
+  if (query.length < 2) return fileError('query_too_short', 'Search queries must be at least 2 characters.', root.status)
+
+  const limit = clampInt(input.limit, 1, 50, 20)
+  const maxVisited = clampInt(input.maxVisited, 100, 25_000, 5000)
+
+  const rgBin = resolveRipgrepBin()
+  if (rgBin) {
+    const proc = spawnSync(
+      rgBin,
+      ['--no-config', '-i', '-n', `--max-count=${CONTENT_MAX_MATCHES_PER_FILE}`, '--max-filesize=1M', '-g', '*.md', '-e', query, root.rootRealPath],
+      { encoding: 'utf8', timeout: 10_000, maxBuffer: 4 * 1024 * 1024 },
+    )
+    if (proc.status === 0 || proc.status === 1) {
+      const { results, truncated } = parseRipgrepOutput(proc.stdout ?? '', root.rootRealPath, limit)
+      return { ok: true, status: root.status, query, engine: 'ripgrep', results, truncated }
+    }
+  }
+
+  const { results, truncated } = searchContentNode(root.rootRealPath, query, limit, maxVisited)
+  return { ok: true, status: root.status, query, engine: 'node', results, truncated }
 }
 
 export function previewDeviceFile(input: { path?: string; maxChars?: number }): DeviceFilePreviewResult {

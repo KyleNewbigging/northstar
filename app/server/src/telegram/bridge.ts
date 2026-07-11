@@ -51,6 +51,7 @@ import {
   queueDigest,
 } from './lifecycle.js'
 import {
+  buildContentSearchMessage,
   buildDebugModeMessage,
   buildFileErrorMessage,
   buildFileListMessage,
@@ -817,7 +818,13 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       return
     }
     if (command === '/find') {
-      await sendMessage(token, settings.chatId, buildFileSearchMessage(requireFileActions().search({ query: commandRest(text), limit: 12 })))
+      const q = commandRest(text)
+      const fileResult = requireFileActions().search({ query: q, limit: 12 })
+      const contentResult = requireFileActions().searchContent({ query: q, limit: 5 })
+      const filePart = buildFileSearchMessage(fileResult)
+      const contentPart = buildContentSearchMessage(contentResult)
+      const combined = contentPart ? `${filePart}\n\n${contentPart}` : filePart
+      await sendMessage(token, settings.chatId, combined.slice(0, 3500))
       return
     }
     if (command === '/file') {

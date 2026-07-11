@@ -1128,6 +1128,14 @@ fastify.get('/api/device-files/search', async (request) => {
     maxVisited: numberFromQuery(query.maxVisited),
   })
 })
+fastify.get('/api/device-files/search-content', async (request) => {
+  const query = request.query as { q?: string; query?: string; limit?: string; maxVisited?: string }
+  return deviceFiles.searchContent({
+    query: query.q ?? query.query,
+    limit: numberFromQuery(query.limit),
+    maxVisited: numberFromQuery(query.maxVisited),
+  })
+})
 fastify.get('/api/device-files/preview', async (request) => {
   const query = request.query as { path?: string; maxChars?: string }
   return deviceFiles.preview({

@@ -1,6 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
-import type { DeviceFileActions, DeviceFileEntry, DeviceFileListResult, DeviceFilePreviewResult, DeviceFileSearchResult, DeviceFilesStatus, DeviceHandoffListResult, DeviceHandoffResult, ProjectResourceResult, ProjectWorkspaceResult } from '../deviceFiles.js'
+import type { ContentMatch, DeviceFileActions, DeviceFileContentSearchResult, DeviceFileEntry, DeviceFileListResult, DeviceFilePreviewResult, DeviceFileSearchResult, DeviceFilesStatus, DeviceHandoffListResult, DeviceHandoffResult, ProjectResourceResult, ProjectWorkspaceResult } from '../deviceFiles.js'
 import type { HeartbeatWriteResult } from '../heartbeat.js'
 import { defaultTelegramAgent, defaultTelegramModel } from './constants.js'
 import { formatSessionRouteSummary, inferTelegramLane, maybeLaneMismatchWarning } from './naturalLanguage.js'
@@ -299,6 +299,18 @@ export function buildFileSearchMessage(result: DeviceFileSearchResult) {
   return lines.join('\n')
 }
 
+export function buildContentSearchMessage(result: DeviceFileContentSearchResult): string | null {
+  if (!result.ok) return null
+  if (!result.results.length) return null
+  const lines = [
+    `Content matches (${result.engine}) · ${result.results.length} hit${result.results.length === 1 ? '' : 's'}`,
+    '',
+    ...result.results.map((m: ContentMatch) => `${m.relPath}:${m.line} ${m.snippet}`),
+  ]
+  if (result.truncated) lines.push('', 'More content matches exist. Narrow the query.')
+  return lines.join('\n')
+}
+
 export function buildFilePreviewMessage(result: DeviceFilePreviewResult) {
   if (!result.ok) return buildFileErrorMessage(result)
   const lines = [
@@ -546,6 +558,7 @@ export function disabledFileActions(): DeviceFileActions {
     status: () => status,
     list: () => error,
     search: () => error,
+    searchContent: () => error,
     preview: () => error,
     createHandoff: () => error,
     listHandoffs: () => error,
@@ -717,7 +730,7 @@ export function helpText() {
     '/inbox - open decisions',
     '/resolve ACTION_ID choice - resolve one inbox item',
     '/files [path] - list Dropbox files',
-    '/find query - search Dropbox filenames/paths',
+    '/find query - search Dropbox filenames/paths and markdown content',
     '/file path - preview a small text/Markdown file',
     '/handoff DEVICE path [note] - create a Dropbox handoff for another device',
     '/handoffs [DEVICE] - list handoffs for this or another device',
