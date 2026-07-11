@@ -10,6 +10,7 @@ import { inferTaskLane } from './lanes.js'
 import { logRoot, worktreeRoot } from './paths.js'
 import { appendProjectLearning, ensureProjectSkillsFile, extractLearningCandidates, readProjectSkills } from './projectSkills.js'
 import type { LocalProject } from './projects.js'
+import { writeRunTranscript } from './sessionTranscripts.js'
 
 export type DispatchModel = 'opus' | 'spark' | 'codex'
 export type TaskPriority = 'P0' | 'P1' | 'P2' | 'P3'
@@ -807,6 +808,8 @@ function finishRun(
     JSON.stringify(inbox.options),
     inbox.help,
   )
+
+  try { writeRunTranscript(db, { runId: context.runId }) } catch {}
 }
 
 function reconcileTmuxRun(db: DatabaseSync, row: RunningRunRow) {
@@ -1641,6 +1644,8 @@ function markRunBlocked(
        WHERE id = ? AND status != 'done'`,
     ).run(detail.stage, row.taskId)
   }
+
+  try { writeRunTranscript(db, { runId: row.id }) } catch {}
 }
 
 function isRunStillRunning(db: DatabaseSync, runId: string) {
