@@ -34,9 +34,9 @@ export const fallbackProjects: Project[] = [
 ]
 
 export const queue: QueueTask[] = [
-  { id: 'T-1001', title: 'Stabilize Northstar rebuild and project ingestion', project: 'northstar', model: 'opus', agent: 'builder', status: 'running', progress: 0.72, priority: 'P0', eta: '~8m', stage: 'wiring local repos', files: 9, branch: 'agent/northstar-rebuild' },
-  { id: 'T-1002', title: 'Read graphify-out/graph.json when present', project: 'northstar', model: 'spark', agent: 'mapper', status: 'queued', progress: 0, priority: 'P1', eta: 'queued', stage: 'waiting for stable API', files: 0, branch: '-' },
-  { id: 'T-1003', title: 'Implement real worktree patch review flow', project: 'northstar', model: 'codex', agent: 'builder', status: 'needs-input', progress: 0.24, priority: 'P1', eta: 'blocked', stage: 'needs merge strategy', files: 4, branch: 'agent/worktree-review' },
+  { id: 'T-1001', title: 'Stabilize Northstar rebuild and project ingestion', project: 'northstar', model: 'opus', agent: 'builder', status: 'running', progress: 0.72, priority: 'P0', eta: '~8m', stage: 'wiring local repos', files: 9, branch: 'agent/northstar-rebuild', lane: 'dev' },
+  { id: 'T-1002', title: 'Read graphify-out/graph.json when present', project: 'northstar', model: 'spark', agent: 'mapper', status: 'queued', progress: 0, priority: 'P1', eta: 'queued', stage: 'waiting for stable API', files: 0, branch: '-', lane: 'dev' },
+  { id: 'T-1003', title: 'Implement real worktree patch review flow', project: 'northstar', model: 'codex', agent: 'builder', status: 'needs-input', progress: 0.24, priority: 'P1', eta: 'blocked', stage: 'needs merge strategy', files: 4, branch: 'agent/worktree-review', lane: 'dev' },
 ]
 
 export const healthProfile: HealthProfile = {

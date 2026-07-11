@@ -115,6 +115,7 @@ export type QueueTask = {
   dispatchStatus?: QueueDispatchStatus | string | null
   dispatchBlocker?: string | null
   dispatchability?: QueueDispatchability
+  lane: 'dev' | 'personal' | 'telegram-intent'
 }
 
 export type QueueDispatchStatus =

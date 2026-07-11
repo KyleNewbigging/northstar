@@ -11,6 +11,7 @@
     "build:web": "tsc -p app/web/tsconfig.json && vite build --config app/web/vite.config.ts",
     "build:server": "tsc -p app/server/tsconfig.json",
     "smoke": "node scripts/smoke.mjs",
+    "test": "node --import tsx --test \"app/server/src/**/*.test.ts\"",
     "setup:dropbox": "node scripts/setup-dropbox-root.mjs",
     "preview": "vite preview --config app/web/vite.config.ts --host 127.0.0.1",
     "server": "tsx app/server/src/index.ts",

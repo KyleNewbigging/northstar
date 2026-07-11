@@ -6,6 +6,7 @@ import type { DatabaseSync } from 'node:sqlite'
 import { setTimeout as sleep } from 'node:timers/promises'
 
 import { checkNoApiGuardrails, resolveCliExecutable, sanitizedEnv } from './guardrails.js'
+import { inferTaskLane } from './lanes.js'
 import { logRoot, worktreeRoot } from './paths.js'
 import { appendProjectLearning, ensureProjectSkillsFile, extractLearningCandidates, readProjectSkills } from './projectSkills.js'
 import type { LocalProject } from './projects.js'
@@ -410,8 +411,8 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
   const taskAgent = request.taskAgent?.trim() || command.provider
   const taskStage = request.taskStage?.trim() || `${modelLabel(model)} running`
   db.prepare(
-    `INSERT INTO tasks (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at, completed_at)
-     VALUES (?, ?, ?, ?, ?, 'running', ?, 0.05, 'now', ?, 0, ?, 'cockpit', '', ?, CURRENT_TIMESTAMP, NULL)
+    `INSERT INTO tasks (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at, completed_at, lane)
+     VALUES (?, ?, ?, ?, ?, 'running', ?, 0.05, 'now', ?, 0, ?, 'cockpit', '', ?, CURRENT_TIMESTAMP, NULL, ?)
      ON CONFLICT(id) DO UPDATE SET
        project_id = excluded.project_id,
        title = excluded.title,
@@ -426,9 +427,10 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
        source = CASE WHEN tasks.source != 'cockpit' THEN tasks.source ELSE excluded.source END,
        source_ref = CASE WHEN tasks.source_ref != '' THEN tasks.source_ref ELSE excluded.source_ref END,
        prompt = excluded.prompt,
+       lane = CASE WHEN tasks.source != 'cockpit' THEN tasks.lane ELSE excluded.lane END,
        updated_at = CURRENT_TIMESTAMP,
        completed_at = NULL`,
-  ).run(taskId, project.id, taskTitle, model, taskAgent, taskPriority, taskStage, `agent/${runSlug.toLowerCase()}`, prompt)
+  ).run(taskId, project.id, taskTitle, model, taskAgent, taskPriority, taskStage, `agent/${runSlug.toLowerCase()}`, prompt, inferTaskLane({ projectId: project.id, source: 'cockpit' }))
 
   db.prepare(
     `INSERT INTO agent_runs
@@ -608,8 +610,8 @@ function finishRun(
   const inbox = inboxForRun(context.model, context.project.name, context.taskId, status, finalText, stderr, command, patch, checks, needsInput)
   db.prepare(
     `INSERT OR IGNORE INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)`,
+      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP)`,
   ).run(
     inbox.id,
     context.project.id,
@@ -1033,8 +1035,8 @@ function upsertPatchReviewInbox(
   const inbox = inboxForRun(source.model, source.projectName, source.taskId, failed ? 'blocked' : 'done', source.finalText, '', command, patch, checks, false)
   db.prepare(
     `INSERT INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?)
+      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, CURRENT_TIMESTAMP)
      ON CONFLICT(id) DO UPDATE SET
        type = excluded.type,
        model = excluded.model,
@@ -1303,7 +1305,7 @@ function withRunAttachCommand<T extends Record<string, unknown>>(row: T) {
   }
 }
 
-function resolveTmuxExecutable(): TmuxExecutable {
+export function resolveTmuxExecutable(): TmuxExecutable {
   const configured = process.env.NORTHSTAR_TMUX_BIN?.trim()
   if (configured) {
     const result = spawnSync(configured, ['-V'], { encoding: 'utf8', env: sanitizedEnv() })
@@ -1333,7 +1335,7 @@ function resolveTmuxExecutable(): TmuxExecutable {
   return { ok: true, executable, version: commandOutput(version) }
 }
 
-function isTmuxSessionAlive(tmuxExecutable: string, session: string) {
+export function isTmuxSessionAlive(tmuxExecutable: string, session: string) {
   const result = spawnSync(tmuxExecutable, ['has-session', '-t', session], { encoding: 'utf8', env: sanitizedEnv() })
   return result.status === 0
 }
@@ -1341,6 +1343,13 @@ function isTmuxSessionAlive(tmuxExecutable: string, session: string) {
 function sendTmuxInterrupt(tmuxExecutable: string, session: string) {
   const result = spawnSync(tmuxExecutable, ['send-keys', '-t', session, 'C-c'], { encoding: 'utf8', env: sanitizedEnv() })
   return result.status === 0
+}
+
+export function sendTmuxText(tmuxExecutable: string, session: string, text: string) {
+  const literal = spawnSync(tmuxExecutable, ['send-keys', '-t', session, '-l', text], { encoding: 'utf8', env: sanitizedEnv() })
+  if (literal.status !== 0) return false
+  const enter = spawnSync(tmuxExecutable, ['send-keys', '-t', session, 'Enter'], { encoding: 'utf8', env: sanitizedEnv() })
+  return enter.status === 0
 }
 
 function killTmuxSession(tmuxExecutable: string, session: string) {

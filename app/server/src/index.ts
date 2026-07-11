@@ -3,9 +3,12 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 
 import { buildAgentGraph, type AgentGraphRun } from './agentGraph.js'
-import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, listRuns, reconcileStaleRuns, refreshPatchArtifact, tmuxReconcileIntervalMs, type DispatchModel, type DispatchRequest, type TaskPriority } from './agentRunner.js'
+import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, isTmuxSessionAlive, listRuns, reconcileStaleRuns, refreshPatchArtifact, resolveTmuxExecutable, sendTmuxText, tmuxReconcileIntervalMs, type DispatchModel, type DispatchRequest, type TaskPriority } from './agentRunner.js'
+import { deliverInboxResolution } from './inboxInject.js'
+import { expireStaleItems } from './expiry.js'
 import { getDb } from './database.js'
 import { createDeviceFileActions } from './deviceFiles.js'
+import { inferTaskLane, type TaskLane } from './lanes.js'
 import { ensureProjectGraph, ensureProjectGraphs, readGraphifyGraph } from './graphify.js'
 import { githubCatalogPath, loadGithubCatalog } from './github.js'
 import { startHeartbeat, type HeartbeatAction, type HeartbeatProject, type HeartbeatRun, type HeartbeatTask, type HeartbeatTelegramStatus } from './heartbeat.js'
@@ -18,6 +21,7 @@ import type { ProjectAutomationState, LocalProject } from './projects.js'
 import { buildStravaAuthorizationUrl, configureStrava, getHealthOverview, getHealthSyncStatus, handleStravaCallback, syncHealthSource } from './health.js'
 import { listOnboarding, seedProjectOnboarding } from './onboarding.js'
 import { getSchedulerSettings, updateSchedulerSettings, type SchedulerSettings } from './scheduler.js'
+import { registerRequestGuard } from './security/requestGuard.js'
 import {
   createTelegramBridge,
   inferNaturalTelegramRoute,
@@ -37,11 +41,16 @@ const loopMonitorCooldownMs = Number(process.env.NORTHSTAR_LOOP_MONITOR_COOLDOWN
 const fastify = Fastify({ logger: true })
 await fastify.register(cors, { origin: [/^http:\/\/127\.0\.0\.1:\d+$/, /^http:\/\/localhost:\d+$/] })
 await fastify.register(websocket)
+// Host/Origin request guard: blocks DNS-rebinding and cross-site POST/WS against
+// these process-spawning, git-apply routes. See security/requestGuard.ts.
+registerRequestGuard(fastify)
 
 const db = getDb()
 const staleRecovery = reconcileStaleRuns(db)
 if (staleRecovery.recovered.length) fastify.log.warn({ recovered: staleRecovery.recovered }, 'recovered stale agent runs')
 if (staleRecovery.finalized.length) fastify.log.info({ finalized: staleRecovery.finalized }, 'finalized tmux agent runs')
+const startupExpiry = expireStaleItems(db)
+if (startupExpiry.inbox > 0 || startupExpiry.tasks > 0 || startupExpiry.runs > 0) fastify.log.info(startupExpiry, 'expired stale items at startup')
 const graphEnsureAttempts = new Set<string>()
 const realtimeClients = new Set<RealtimeSocket>()
 const deviceFiles = createDeviceFileActions(db)
@@ -102,10 +111,13 @@ telegramStatusForHeartbeat = () => {
 await telegramBridge.start()
 const tmuxReconcileTimer = setInterval(() => {
   const result = reconcileStaleRuns(db)
-  if (!result.recovered.length && !result.finalized.length) return
+  const expiry = expireStaleItems(db)
+  const expiryChanged = expiry.inbox > 0 || expiry.tasks > 0 || expiry.runs > 0
+  if (!result.recovered.length && !result.finalized.length && !expiryChanged) return
   if (result.recovered.length) fastify.log.warn({ recovered: result.recovered }, 'recovered stale agent runs')
   if (result.finalized.length) fastify.log.info({ finalized: result.finalized }, 'finalized tmux agent runs')
-  broadcastRealtime('runs:updated', { result, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions(), projects: currentProjects() })
+  if (expiryChanged) fastify.log.info(expiry, 'expired stale items')
+  broadcastRealtime('runs:updated', { result, expiry, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions(), projects: currentProjects() })
 }, Math.max(1000, tmuxReconcileIntervalMs))
 tmuxReconcileTimer.unref?.()
 
@@ -161,6 +173,7 @@ type QueueRow = {
   completedAt?: string | null
   dispatchStatus?: string | null
   dispatchBlocker?: string | null
+  lane: TaskLane
 }
 
 type QueueDispatchStatus =
@@ -637,7 +650,15 @@ function resolveInboxAction(id: string, rawChoice: string) {
   const choice = normalizeInboxChoice(rawChoice, options)
   const taskResolution = resolveTelegramPromptTask(row.task_id, choice, options)
   db.prepare("UPDATE inbox_actions SET resolved_at = CURRENT_TIMESTAMP, resolution = ? WHERE id = ?").run(choice, id)
-  return { ok: true, id, choice, taskResolution, actions: listInboxActions(), tasks: listQueueTasks(), runs: listRuns(db) }
+  const injection = deliverInboxResolution(db, id, choice, {
+    resolveExecutable: () => {
+      const exec = resolveTmuxExecutable()
+      return exec.ok ? { ok: true, executable: exec.executable } : { ok: false, error: exec.error }
+    },
+    isAlive: isTmuxSessionAlive,
+    sendText: sendTmuxText,
+  })
+  return { ok: true, id, choice, taskResolution, delivery: injection.delivery, deliveryDetail: injection.detail, deliveryRunId: injection.runId, deliveryTaskId: injection.taskId, actions: listInboxActions(), tasks: listQueueTasks(), runs: listRuns(db) }
 }
 
 function normalizeInboxChoice(rawChoice: string, options: string[]) {
@@ -739,8 +760,8 @@ function seedNextAutonomyQuestion(project: LocalProject) {
   const id = `AUTO-${project.id}-${total.count + 1}`
   db.prepare(
     `INSERT OR IGNORE INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, NULL, 'question', 'spark', 'P2', 'med', ?, ?, ?, ?, ?)`,
+      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
+     VALUES (?, ?, NULL, 'question', 'spark', 'P2', 'med', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
   ).run(
     id,
     project.id,
@@ -774,13 +795,13 @@ function queueTelegramPrompt(input: { text: string; session: TelegramSession; me
     const options = ['Queue Codex worktree', 'Queue Spark worktree', 'Queue Claude plan', 'Discard']
     db.prepare(
       `INSERT INTO tasks
-        (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at)
-       VALUES (?, ?, ?, ?, ?, 'needs-input', 'P2', 0, 'needs input', 'Telegram greeting needs a concrete task', 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
+        (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at, lane)
+       VALUES (?, ?, ?, ?, ?, 'needs-input', 'P2', 0, 'needs input', 'Telegram greeting needs a concrete task', 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP, 'telegram-intent')`,
     ).run(taskId, routed.projectId, title, model, taskAgent, sourceRef, prompt)
     db.prepare(
       `INSERT OR IGNORE INTO inbox_actions
-        (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-       VALUES (?, ?, ?, 'question', ?, 'P2', 'med', ?, ?, ?, ?, ?)`,
+        (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
+       VALUES (?, ?, ?, 'question', ?, 'P2', 'med', ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`,
     ).run(
       actionId,
       routed.projectId,
@@ -809,8 +830,8 @@ function queueTelegramPrompt(input: { text: string; session: TelegramSession; me
 
   db.prepare(
     `INSERT INTO tasks
-      (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at)
-     VALUES (?, ?, ?, ?, ?, 'queued', 'P1', 0.1, 'now', ?, 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP)`,
+      (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, source, source_ref, prompt, updated_at, lane)
+     VALUES (?, ?, ?, ?, ?, 'queued', 'P1', 0.1, 'now', ?, 0, '', 'telegram', ?, ?, CURRENT_TIMESTAMP, 'telegram-intent')`,
   ).run(taskId, routed.projectId, title, model, taskAgent, telegramApprovalStage(model), sourceRef, prompt)
 
   const dispatch = input.autoDispatch ? dispatchQueuedTask(taskId, { manualApproval: true }) : undefined
@@ -1208,9 +1229,11 @@ fastify.post('/api/autonomy/tick', async () => {
   broadcastRealtime('autonomy:tick', result)
   return result
 })
-fastify.get('/api/queue', async () => ({
-  tasks: listQueueTasks(),
-}))
+fastify.get('/api/queue', async (request) => {
+  const laneParam = (request.query as { lane?: string } | undefined)?.lane
+  const lane = laneParam === 'dev' || laneParam === 'personal' || laneParam === 'telegram-intent' ? laneParam : undefined
+  return { tasks: lane ? listQueueTasks({ lane }) : listQueueTasks() }
+})
 fastify.get('/api/queue/:id', async (request) => queueTaskDetail((request.params as { id: string }).id))
 fastify.get('/api/agent-graph', async () => buildAgentGraph(currentProjects(), listQueueTasks(), listRuns(db) as AgentGraphRun[], listInboxActions()))
 fastify.post('/api/queue/:id/dispatch', async (request) => {
@@ -1265,8 +1288,8 @@ fastify.post('/api/patches/:task/request-changes', async (request) => {
   if (!patch) return { ok: false, error: 'patch_not_found' }
   db.prepare(
     `INSERT OR REPLACE INTO inbox_actions
-      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help)
-     VALUES (?, ?, ?, 'question', ?, 'P1', 'high', ?, ?, ?, 0, ?)`,
+      (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
+     VALUES (?, ?, ?, 'question', ?, 'P1', 'high', ?, ?, ?, 0, ?, CURRENT_TIMESTAMP)`,
   ).run(
     `RUN-CHANGES-${patch.task}`,
     patch.project,
@@ -1505,7 +1528,8 @@ function queueTaskById(id: string) {
           updated_at AS updatedAt,
           completed_at AS completedAt,
           dispatch_status AS dispatchStatus,
-          dispatch_blocker AS dispatchBlocker
+          dispatch_blocker AS dispatchBlocker,
+          lane
          FROM tasks
          WHERE id = ?`,
       )
@@ -1513,8 +1537,14 @@ function queueTaskById(id: string) {
   )
 }
 
-function listQueueTasks() {
-  const rows = db.prepare(
+function listQueueTasks(filter?: { lane?: TaskLane }) {
+  const decorated = decorateQueueTasks(rawQueueTasksInternal(), currentProjects())
+  if (filter?.lane) return decorated.filter((task) => task.lane === filter.lane)
+  return decorated
+}
+
+function rawQueueTasksInternal() {
+  return db.prepare(
     `SELECT
       id,
       title,
@@ -1535,14 +1565,14 @@ function listQueueTasks() {
       updated_at AS updatedAt,
       completed_at AS completedAt,
       dispatch_status AS dispatchStatus,
-      dispatch_blocker AS dispatchBlocker
+      dispatch_blocker AS dispatchBlocker,
+      lane
      FROM tasks
      ORDER BY
       CASE status WHEN 'running' THEN 0 WHEN 'needs-input' THEN 1 WHEN 'queued' THEN 2 WHEN 'blocked' THEN 3 ELSE 4 END,
       CASE priority WHEN 'P0' THEN 0 WHEN 'P1' THEN 1 WHEN 'P2' THEN 2 ELSE 3 END,
       id ASC`,
   ).all() as QueueRow[]
-  return decorateQueueTasks(rows, currentProjects())
 }
 
 function queueTaskDetail(id: string) {
@@ -1849,7 +1879,8 @@ function rawQueueTasks() {
       updated_at AS updatedAt,
       completed_at AS completedAt,
       dispatch_status AS dispatchStatus,
-      dispatch_blocker AS dispatchBlocker
+      dispatch_blocker AS dispatchBlocker,
+      lane
      FROM tasks
      ORDER BY
       CASE status WHEN 'running' THEN 0 WHEN 'needs-input' THEN 1 WHEN 'queued' THEN 2 WHEN 'blocked' THEN 3 ELSE 4 END,

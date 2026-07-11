@@ -1,5 +1,6 @@
 import type { DatabaseSync } from 'node:sqlite'
 
+import { inferTaskLane } from './lanes.js'
 import { ensureProjectSkillsFile, upsertProjectOnboarding } from './projectSkills.js'
 import type { LocalProject } from './projects.js'
 
@@ -76,15 +77,15 @@ function seedOneProject(db: DatabaseSync, project: LocalProject) {
 
   for (const item of profile.queue) {
     db.prepare(
-      `INSERT INTO tasks (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch)
-       VALUES (?, ?, ?, ?, 'onboarding', 'queued', ?, 0, 'nightly', ?, 0, ?)
+      `INSERT INTO tasks (id, project_id, title, model, agent, status, priority, progress, eta, stage, files, branch, lane)
+       VALUES (?, ?, ?, ?, 'onboarding', 'queued', ?, 0, 'nightly', ?, 0, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          title = excluded.title,
          model = excluded.model,
          priority = excluded.priority,
          stage = excluded.stage,
          eta = excluded.eta`,
-    ).run(item.id, project.id, item.title, item.model, item.priority, item.stage, project.localExists ? `agent/${project.id}-onboarding` : '-')
+    ).run(item.id, project.id, item.title, item.model, item.priority, item.stage, project.localExists ? `agent/${project.id}-onboarding` : '-', inferTaskLane({ projectId: project.id }))
   }
 
   return { projectId: project.id, name: project.name, profile: profile.label, goals: profile.goals.length, queued: profile.queue.length }

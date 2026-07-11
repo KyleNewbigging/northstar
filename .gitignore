@@ -33,3 +33,9 @@ dist-ssr
 
 # Test output (if/when you add tests)
 coverage
+
+# Personal working documents — never commit
+tmp/
+
+# Claude Code local overrides
+.claude/settings.local.json

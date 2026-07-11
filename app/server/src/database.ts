@@ -22,7 +22,7 @@ export function getDb() {
   return db
 }
 
-function runMigrations(database: DatabaseSync) {
+export function runMigrations(database: DatabaseSync) {
   database.exec(`
     CREATE TABLE IF NOT EXISTS scheduler_settings (
       id TEXT PRIMARY KEY,
@@ -193,6 +193,8 @@ function runMigrations(database: DatabaseSync) {
   ensureColumn(database, 'tasks', 'completed_at', 'ALTER TABLE tasks ADD COLUMN completed_at TEXT')
   ensureColumn(database, 'tasks', 'dispatch_status', "ALTER TABLE tasks ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT 'unknown'")
   ensureColumn(database, 'tasks', 'dispatch_blocker', "ALTER TABLE tasks ADD COLUMN dispatch_blocker TEXT NOT NULL DEFAULT ''")
+  ensureColumn(database, 'tasks', 'lane', "ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT 'dev'")
+  backfillTaskLanes(database)
   ensureColumn(database, 'telegram_bridge_settings', 'notify_important', 'ALTER TABLE telegram_bridge_settings ADD COLUMN notify_important INTEGER NOT NULL DEFAULT 1')
   ensureColumn(database, 'telegram_bridge_settings', 'notify_lifecycle_debug', 'ALTER TABLE telegram_bridge_settings ADD COLUMN notify_lifecycle_debug INTEGER NOT NULL DEFAULT 0')
   ensureColumn(database, 'telegram_bridge_settings', 'notify_run_telemetry_debug', 'ALTER TABLE telegram_bridge_settings ADD COLUMN notify_run_telemetry_debug INTEGER NOT NULL DEFAULT 0')
@@ -213,6 +215,8 @@ function runMigrations(database: DatabaseSync) {
      )`,
   ).run()
   database.prepare('CREATE UNIQUE INDEX IF NOT EXISTS patches_task_id_unique ON patches(task_id)').run()
+  ensureColumn(database, 'inbox_actions', 'created_at', 'ALTER TABLE inbox_actions ADD COLUMN created_at TEXT')
+  database.prepare('UPDATE inbox_actions SET created_at = CURRENT_TIMESTAMP WHERE created_at IS NULL').run()
   database.prepare('UPDATE agent_runs SET updated_at = COALESCE(updated_at, started_at, CURRENT_TIMESTAMP)').run()
   database.prepare('UPDATE tasks SET created_at = COALESCE(created_at, CURRENT_TIMESTAMP)').run()
   database.prepare('UPDATE tasks SET updated_at = COALESCE(updated_at, created_at, CURRENT_TIMESTAMP)').run()
@@ -224,6 +228,21 @@ function runMigrations(database: DatabaseSync) {
 function ensureColumn(database: DatabaseSync, table: string, column: string, sql: string) {
   const columns = database.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>
   if (!columns.some((item) => item.name === column)) database.exec(sql)
+}
+
+export function backfillTaskLanes(database: DatabaseSync) {
+  const nonDefault = database
+    .prepare("SELECT COUNT(*) AS count FROM tasks WHERE lane != 'dev'")
+    .get() as { count: number }
+  if (nonDefault.count > 0) return
+  // telegram source -> raw utterance intent lane
+  database
+    .prepare("UPDATE tasks SET lane = 'telegram-intent' WHERE lane = 'dev' AND source = 'telegram'")
+    .run()
+  // northstar project tasks stay as 'dev' (default). Anything else (non-telegram, non-northstar) -> personal.
+  database
+    .prepare("UPDATE tasks SET lane = 'personal' WHERE lane = 'dev' AND project_id != 'northstar' AND source != 'telegram'")
+    .run()
 }
 
 function seedUsage(database: DatabaseSync) {

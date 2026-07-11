@@ -45,7 +45,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
   completed_at TEXT,
   dispatch_status TEXT NOT NULL DEFAULT 'unknown',
-  dispatch_blocker TEXT NOT NULL DEFAULT ''
+  dispatch_blocker TEXT NOT NULL DEFAULT '',
+  lane TEXT NOT NULL DEFAULT 'dev'
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (
@@ -111,7 +112,8 @@ CREATE TABLE IF NOT EXISTS inbox_actions (
   recommend INTEGER,
   help TEXT,
   resolved_at TEXT,
-  resolution TEXT
+  resolution TEXT,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
 
 CREATE TABLE IF NOT EXISTS usage (
