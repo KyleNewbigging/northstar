@@ -432,27 +432,18 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
        completed_at = NULL`,
   ).run(taskId, project.id, taskTitle, model, taskAgent, taskPriority, taskStage, `agent/${runSlug.toLowerCase()}`, prompt, inferTaskLane({ projectId: project.id, source: 'cockpit' }))
 
-  db.prepare(
-    `INSERT INTO agent_runs
-      (id, task_id, project_id, model, provider, command, cwd, worktree_path, transport, base_path, tmux_session, stdout_log_path, stderr_log_path, exit_status_path, final_text_path, status, prompt, stdout, stderr, final_text)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'tmux', ?, ?, ?, ?, ?, ?, 'running', ?, '', '', '')`,
-  ).run(
+  insertAgentRunRow(db, {
     runId,
     taskId,
-    project.id,
+    projectId: project.id,
     model,
-    command.provider,
-    command.display,
-    command.cwd,
+    command,
     worktreePath,
-    repoPath,
+    basePath: repoPath,
     tmuxSession,
-    runFiles.stdoutPath,
-    runFiles.stderrPath,
-    runFiles.exitStatusPath,
-    runFiles.finalTextPath,
+    runFiles,
     prompt,
-  )
+  })
 
   const started = startTmuxRun(tmux, tmuxSession, command, runFiles)
   if (!started.ok) {
@@ -470,6 +461,197 @@ export function dispatchAgent(db: DatabaseSync, projects: LocalProject[], reques
     task: { id: taskId, projectId: project.id, model, status: 'running' },
     run: { id: runId, status: 'running', finalText: '', exitCode: null, worktreePath, transport: 'tmux', tmuxSession, attachCommand },
   }
+}
+
+function insertAgentRunRow(
+  db: DatabaseSync,
+  input: {
+    runId: string
+    taskId: string
+    projectId: string
+    model: DispatchModel
+    command: RunnerCommand
+    worktreePath: string
+    basePath: string
+    tmuxSession: string
+    runFiles: TmuxRunFiles
+    prompt: string
+  },
+) {
+  db.prepare(
+    `INSERT INTO agent_runs
+      (id, task_id, project_id, model, provider, command, cwd, worktree_path, transport, base_path, tmux_session, stdout_log_path, stderr_log_path, exit_status_path, final_text_path, status, prompt, stdout, stderr, final_text)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'tmux', ?, ?, ?, ?, ?, ?, 'running', ?, '', '', '')`,
+  ).run(
+    input.runId,
+    input.taskId,
+    input.projectId,
+    input.model,
+    input.command.provider,
+    input.command.display,
+    input.command.cwd,
+    input.worktreePath,
+    input.basePath,
+    input.tmuxSession,
+    input.runFiles.stdoutPath,
+    input.runFiles.stderrPath,
+    input.runFiles.exitStatusPath,
+    input.runFiles.finalTextPath,
+    input.prompt,
+  )
+}
+
+export type ResumeAgentResult =
+  | {
+      ok: true
+      task: { id: string; projectId: string; model: DispatchModel; status: RunStatus }
+      run: { id: string; status: RunStatus; worktreePath: string; transport: 'tmux'; tmuxSession: string; attachCommand: string }
+    }
+  | { ok: false; blocked?: boolean; code?: string; error: string; guardrails?: ReturnType<typeof checkNoApiGuardrails> }
+
+export function buildResumePrompt(input: { taskId: string; taskTitle: string; notes: string; worktreePath: string }) {
+  const title = (input.taskTitle || input.taskId).replace(/\s+/g, ' ').trim() || input.taskId
+  const trimmedNotes = (input.notes || '').trim()
+  const lines = [
+    `Northstar is resuming your reviewed patch for task ${input.taskId} (${title}).`,
+    `You are back in the same isolated worktree at ${input.worktreePath}. Amend your prior work in place; do not start over.`,
+    'Reviewer notes from Kyle (verbatim):',
+    trimmedNotes || '(no additional notes provided)',
+    'Address the reviewer notes, update any affected files inside this worktree, and leave the tree with your best complete patch. Northstar will re-run verification and refresh the patch artifact after you exit.',
+  ]
+  return lines.join('\n')
+}
+
+export function resumeAgentInWorktree(
+  db: DatabaseSync,
+  projects: LocalProject[],
+  taskId: string,
+  notes: string,
+): ResumeAgentResult {
+  const source = findResumeSource(db, taskId)
+  if (!source) return { ok: false, error: 'patch_not_found' }
+  if (!source.worktree || !existsSync(source.worktree)) return { ok: false, error: 'worktree_missing' }
+  if (gitText(source.worktree, ['rev-parse', '--is-inside-work-tree']) !== 'true') return { ok: false, error: 'worktree_not_git' }
+
+  const model: DispatchModel = source.model === 'opus' ? 'spark' : source.model
+  const guardrails = checkNoApiGuardrails(model)
+  if (!guardrails.ok) return { ok: false, blocked: true, code: 'guardrails_blocked', error: 'Strict no-API guardrails blocked resume.', guardrails }
+
+  const running = db.prepare("SELECT COUNT(*) AS count FROM agent_runs WHERE status = 'running'").get() as { count: number }
+  if (running.count >= maxParallelRuns) return { ok: false, blocked: true, code: 'slots_busy', error: `All ${maxParallelRuns} Northstar agent slots are busy.` }
+
+  const project = projects.find((item) => item.id === source.projectId) ?? projectFromRunRow(db, {
+    id: source.runId,
+    taskId: source.taskId,
+    projectId: source.projectId,
+    model,
+    provider: 'codex-cli',
+    command: '',
+    cwd: source.worktree,
+    worktreePath: source.worktree,
+    transport: 'tmux',
+    basePath: source.basePath,
+    tmuxSession: null,
+    stdoutLogPath: null,
+    stderrLogPath: null,
+    exitStatusPath: null,
+    finalTextPath: null,
+    pid: null,
+    status: 'blocked',
+  })
+
+  const tmux = resolveTmuxExecutable()
+  if (!tmux.ok) return { ok: false, blocked: true, code: 'tmux_unavailable', error: tmux.error }
+
+  const taskTitle = readTaskTitle(db, source.taskId) || source.taskId
+  const prompt = buildResumePrompt({ taskId: source.taskId, taskTitle, notes, worktreePath: source.worktree })
+
+  const runId = randomUUID()
+  const scopeContext = `Command scope: resume review for task ${source.taskId} inside existing worktree ${source.worktree}.`
+  const command = buildRunnerCommand(model, prompt, project, source.basePath || project.path, source.worktree, runId, scopeContext)
+  const tmuxSession = tmuxSessionName(source.taskId, runId)
+  const runFiles = prepareTmuxRunFiles(runId, command)
+  const attachCommand = tmuxAttachCommand(tmuxSession)
+
+  ensureProjectRow(db, project)
+
+  db.prepare(
+    `UPDATE tasks
+     SET status = 'running', progress = 0.35, eta = 'now', stage = 'revising after review notes', updated_at = CURRENT_TIMESTAMP, completed_at = NULL
+     WHERE id = ?`,
+  ).run(source.taskId)
+
+  insertAgentRunRow(db, {
+    runId,
+    taskId: source.taskId,
+    projectId: project.id,
+    model,
+    command,
+    worktreePath: source.worktree,
+    basePath: source.basePath || project.path,
+    tmuxSession,
+    runFiles,
+    prompt,
+  })
+
+  const started = startTmuxRun(tmux, tmuxSession, command, runFiles)
+  if (!started.ok) {
+    markRunBlocked(db, { id: runId, taskId: source.taskId }, {
+      finalText: `Northstar could not start tmux session ${tmuxSession}.`,
+      stderrNote: `[northstar] tmux launch failed: ${started.error}`,
+      stage: `${modelLabel(model)} tmux launch failed`,
+      exitCode: 1,
+    })
+    return { ok: false, blocked: true, code: 'tmux_launch_failed', error: started.error }
+  }
+
+  return {
+    ok: true,
+    task: { id: source.taskId, projectId: project.id, model, status: 'running' },
+    run: { id: runId, status: 'running', worktreePath: source.worktree, transport: 'tmux', tmuxSession, attachCommand },
+  }
+}
+
+function findResumeSource(db: DatabaseSync, taskId: string) {
+  const patchRow = db
+    .prepare(
+      `SELECT
+        p.task_id AS taskId,
+        p.run_id AS runId,
+        p.project_id AS projectId,
+        p.base_path AS basePath,
+        p.worktree,
+        COALESCE(ar.model, 'spark') AS model
+       FROM patches p
+       LEFT JOIN agent_runs ar ON ar.id = p.run_id
+       WHERE p.task_id = CASE WHEN ? = 'latest' THEN p.task_id ELSE ? END
+       ORDER BY datetime(p.updated_at) DESC
+       LIMIT 1`,
+    )
+    .get(taskId, taskId) as
+    | { taskId: string; runId: string; projectId: string; basePath: string; worktree: string; model: DispatchModel }
+    | undefined
+  if (patchRow) return patchRow
+
+  const runRow = db
+    .prepare(
+      `SELECT
+        id AS runId,
+        task_id AS taskId,
+        project_id AS projectId,
+        model,
+        COALESCE(NULLIF(base_path, ''), '') AS basePath,
+        COALESCE(NULLIF(worktree_path, ''), NULLIF(cwd, ''), '') AS worktree
+       FROM agent_runs
+       WHERE task_id = CASE WHEN ? = 'latest' THEN task_id ELSE ? END
+         AND COALESCE(NULLIF(worktree_path, ''), NULLIF(cwd, ''), '') != ''
+       ORDER BY datetime(updated_at) DESC
+       LIMIT 1`,
+    )
+    .get(taskId, taskId) as
+    | { runId: string; taskId: string; projectId: string; model: DispatchModel; basePath: string; worktree: string }
+    | undefined
+  return runRow ?? null
 }
 
 function prepareTmuxRunFiles(runId: string, command: RunnerCommand): TmuxRunFiles {
@@ -821,8 +1003,37 @@ export function approvePatch(db: DatabaseSync, taskId: string) {
   const applied = spawnSync('git', ['apply', '-'], { cwd: row.base_path, input: diff, encoding: 'utf8', env: sanitizedEnv(), maxBuffer: 10 * 1024 * 1024 })
   if (applied.status !== 0) return { ok: false, error: `${applied.stderr}${applied.stdout}`.trim() || 'Patch apply failed.' }
 
-  db.prepare("UPDATE inbox_actions SET resolved_at = CURRENT_TIMESTAMP, resolution = 'approved-local-apply' WHERE task_id = ? AND type = 'review' AND resolved_at IS NULL").run(row.task_id)
-  return { ok: true, task: row.task_id, applied: changedFiles.length, committed: false, pushed: false }
+  const taskTitle = readTaskTitle(db, row.task_id)
+  const commitMessage = buildApprovalCommitMessage(row.task_id, taskTitle)
+  const stageArgs = ['add', '--all', '--', ...changedFiles]
+  const staged = spawnSync('git', stageArgs, { cwd: row.base_path, encoding: 'utf8', env: sanitizedEnv() })
+  if (staged.status !== 0) {
+    return { ok: false, applied: changedFiles.length, error: `${staged.stderr}${staged.stdout}`.trim() || 'Failed to stage approved files.' }
+  }
+  const commit = spawnSync('git', ['commit', '-m', commitMessage], { cwd: row.base_path, encoding: 'utf8', env: sanitizedEnv() })
+  if (commit.status !== 0) {
+    return { ok: false, applied: changedFiles.length, error: `${commit.stderr}${commit.stdout}`.trim() || 'Failed to commit approved patch.' }
+  }
+  const commitSha = gitText(row.base_path, ['rev-parse', '--short', 'HEAD']) || ''
+
+  db.prepare("UPDATE inbox_actions SET resolved_at = CURRENT_TIMESTAMP, resolution = 'approved-local-commit' WHERE task_id = ? AND type = 'review' AND resolved_at IS NULL").run(row.task_id)
+  db.prepare(
+    `UPDATE tasks
+     SET status = 'done', progress = 1, eta = 'done', stage = 'patch approved + committed locally', updated_at = CURRENT_TIMESTAMP, completed_at = CURRENT_TIMESTAMP
+     WHERE id = ?`,
+  ).run(row.task_id)
+  return { ok: true, task: row.task_id, applied: changedFiles.length, committed: true, commitSha, pushed: false }
+}
+
+export function buildApprovalCommitMessage(taskId: string, taskTitle: string) {
+  const firstLine = `Apply ${taskId} patch via Northstar review`
+  const body = (taskTitle || '').replace(/\s+/g, ' ').trim()
+  return body ? `${firstLine}\n\n${body}\n` : `${firstLine}\n`
+}
+
+function readTaskTitle(db: DatabaseSync, taskId: string) {
+  const row = db.prepare('SELECT title FROM tasks WHERE id = ?').get(taskId) as { title?: string } | undefined
+  return row?.title ?? ''
 }
 
 export function refreshPatchArtifact(db: DatabaseSync, projects: LocalProject[], taskId: string) {

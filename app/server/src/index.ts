@@ -3,7 +3,7 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 
 import { buildAgentGraph, type AgentGraphRun } from './agentGraph.js'
-import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, isTmuxSessionAlive, listRuns, reconcileStaleRuns, refreshPatchArtifact, resolveTmuxExecutable, sendTmuxText, tmuxReconcileIntervalMs, type DispatchModel, type DispatchRequest, type TaskPriority } from './agentRunner.js'
+import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, isTmuxSessionAlive, listRuns, reconcileStaleRuns, refreshPatchArtifact, resolveTmuxExecutable, resumeAgentInWorktree, sendTmuxText, tmuxReconcileIntervalMs, type DispatchModel, type DispatchRequest, type TaskPriority } from './agentRunner.js'
 import { deliverInboxResolution } from './inboxInject.js'
 import { expireStaleItems } from './expiry.js'
 import { getDb } from './database.js'
@@ -1283,9 +1283,17 @@ fastify.post('/api/patches/:task/approve', async (request) => {
 })
 fastify.post('/api/patches/:task/request-changes', async (request) => {
   const { task } = request.params as { task: string }
-  const body = (request.body ?? {}) as { notes?: string }
+  const body = (request.body ?? {}) as { notes?: string; resume?: boolean }
   const patch = getPatch(db, task)
   if (!patch) return { ok: false, error: 'patch_not_found' }
+  const notes = body.notes?.trim() || ''
+  const shouldResume = body.resume !== false
+  const resume = shouldResume ? resumeAgentInWorktree(db, currentProjects(), patch.task, notes) : null
+
+  const helpParts = [`Worktree kept at ${patch.worktree}.`]
+  if (resume && resume.ok) helpParts.push(`Resumed agent run ${resume.run.id} in tmux session ${resume.run.tmuxSession}.`)
+  else if (resume && !resume.ok) helpParts.push(`Resume did not start: ${resume.error}`)
+
   db.prepare(
     `INSERT OR REPLACE INTO inbox_actions
       (id, project_id, task_id, type, model, priority, urgency, title, ctx, options_json, recommend, help, created_at)
@@ -1296,11 +1304,18 @@ fastify.post('/api/patches/:task/request-changes', async (request) => {
     patch.task,
     patch.model,
     `Changes requested for ${patch.task}`,
-    body.notes?.trim() || 'Kyle requested changes from Patch Review. Add the exact next instruction or dispatch a follow-up agent pass.',
+    notes || 'Kyle requested changes from Patch Review. Add the exact next instruction or dispatch a follow-up agent pass.',
     JSON.stringify(['Dispatch follow-up', 'Leave note only', 'Pause']),
-    `Worktree kept at ${patch.worktree}.`,
+    helpParts.join(' '),
   )
-  const result = { ok: true, task: patch.task, worktreeKept: true, actions: listInboxActions() }
+  const result = {
+    ok: true,
+    task: patch.task,
+    worktreeKept: true,
+    resumed: Boolean(resume && resume.ok),
+    resume: resume ?? null,
+    actions: listInboxActions(),
+  }
   broadcastRealtime('patches:updated', result)
   return result
 })
