@@ -18,6 +18,21 @@ export function priorityWeight(value: AttentionAlertPriority) {
   return 3
 }
 
+export function parseDispatchCommand(rest: string): { taskId: string; targetDevice: string | null } {
+  const tokens = rest.split(/\s+/).filter(Boolean)
+  let taskId = ''
+  let targetDevice: string | null = null
+  for (const token of tokens) {
+    if (token.startsWith('@') && token.length > 1) {
+      const cleaned = token.slice(1).trim().replace(/[^A-Za-z0-9_.-]/g, '-').replace(/-+/g, '-').slice(0, 64)
+      if (cleaned) targetDevice = cleaned
+      continue
+    }
+    if (!taskId) taskId = token
+  }
+  return { taskId, targetDevice }
+}
+
 export function resolveFromCommand(text: string) {
   const [, id = '', ...choiceParts] = text.split(/\s+/)
   const choice = choiceParts.join(' ').trim()

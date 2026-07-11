@@ -46,7 +46,8 @@ CREATE TABLE IF NOT EXISTS tasks (
   completed_at TEXT,
   dispatch_status TEXT NOT NULL DEFAULT 'unknown',
   dispatch_blocker TEXT NOT NULL DEFAULT '',
-  lane TEXT NOT NULL DEFAULT 'dev'
+  lane TEXT NOT NULL DEFAULT 'dev',
+  target_device TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS agent_runs (

@@ -7,8 +7,9 @@ import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, isTmuxSession
 import { deliverInboxResolution } from './inboxInject.js'
 import { expireStaleItems } from './expiry.js'
 import { getDb } from './database.js'
-import { createDeviceFileActions } from './deviceFiles.js'
+import { createDeviceFileActions, getDeviceFilesStatus } from './deviceFiles.js'
 import { listDevices, writeDeviceHeartbeat } from './deviceRegistry.js'
+import { consumeDispatchHandoffs, produceDispatchHandoff } from './dispatchHandoffs.js'
 import { inferTaskLane, type TaskLane } from './lanes.js'
 import { ensureProjectGraph, ensureProjectGraphs, readGraphifyGraph } from './graphify.js'
 import { githubCatalogPath, loadGithubCatalog } from './github.js'
@@ -88,8 +89,8 @@ const telegramBridge = createTelegramBridge(db, {
   }),
   getOperationsOverview: () => buildOperationsOverviewSync(),
   getQueueTask: (id) => queueTaskDetail(id),
-  runQueueTask: (id) => {
-    const result = dispatchQueuedTask(id, { manualApproval: true })
+  runQueueTask: (id, opts) => {
+    const result = dispatchQueuedTask(id, { manualApproval: true, targetDevice: opts?.targetDevice })
     broadcastRealtime('queue:updated', { taskId: id, result, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions() })
     return result
   },
@@ -134,6 +135,35 @@ const tmuxReconcileTimer = setInterval(() => {
   broadcastRealtime('runs:updated', { result, expiry, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions(), projects: currentProjects() })
 }, Math.max(1000, tmuxReconcileIntervalMs))
 tmuxReconcileTimer.unref?.()
+
+const handoffPollIntervalMs = Math.max(10_000, Number(process.env.NORTHSTAR_HANDOFF_POLL_MS ?? 60_000) || 60_000)
+let lastHandoffUnknownReport = ''
+function runHandoffConsume(source: string) {
+  try {
+    const result = consumeDispatchHandoffs(db, currentProjects())
+    if (result.intake > 0 || result.consumed > 0 || result.invalid > 0) {
+      fastify.log.info({ source, ...result }, 'consumed dispatch handoffs')
+      broadcastRealtime('queue:updated', {
+        source: 'handoff-intake',
+        handoff: { intake: result.intake, consumed: result.consumed, invalid: result.invalid },
+        tasks: listQueueTasks(),
+        runs: listRuns(db),
+        actions: listInboxActions(),
+      })
+    }
+    const unknownKey = result.skippedUnknownProject.slice().sort().join(',')
+    if (unknownKey && unknownKey !== lastHandoffUnknownReport) {
+      fastify.log.warn({ source, unknownProjects: result.skippedUnknownProject }, 'handoff artifacts waiting for unknown projects')
+      lastHandoffUnknownReport = unknownKey
+    }
+    if (!unknownKey) lastHandoffUnknownReport = ''
+  } catch (error) {
+    fastify.log.warn({ error, source }, 'dispatch handoff consume failed')
+  }
+}
+runHandoffConsume('startup')
+const handoffConsumeTimer = setInterval(() => runHandoffConsume('interval'), handoffPollIntervalMs)
+handoffConsumeTimer.unref?.()
 
 type RealtimeSocket = {
   readyState?: number
@@ -188,6 +218,7 @@ type QueueRow = {
   dispatchStatus?: string | null
   dispatchBlocker?: string | null
   lane: TaskLane
+  targetDevice?: string | null
 }
 
 type QueueDispatchStatus =
@@ -203,6 +234,7 @@ type QueueDispatchStatus =
   | 'model-disabled'
   | 'no-free-slot'
   | 'guarded'
+  | 'remote-device'
 
 type QueueDispatchability = {
   status: QueueDispatchStatus
@@ -277,6 +309,7 @@ type SchedulerTickBody = {
 
 type ManualApprovalBody = {
   manualApproval?: boolean
+  targetDevice?: string
 }
 
 type OperationsOverview = {
@@ -1601,7 +1634,8 @@ function queueTaskById(id: string) {
           completed_at AS completedAt,
           dispatch_status AS dispatchStatus,
           dispatch_blocker AS dispatchBlocker,
-          lane
+          lane,
+          target_device AS targetDevice
          FROM tasks
          WHERE id = ?`,
       )
@@ -1638,7 +1672,8 @@ function rawQueueTasksInternal() {
       completed_at AS completedAt,
       dispatch_status AS dispatchStatus,
       dispatch_blocker AS dispatchBlocker,
-      lane
+      lane,
+      target_device AS targetDevice
      FROM tasks
      ORDER BY
       CASE status WHEN 'running' THEN 0 WHEN 'needs-input' THEN 1 WHEN 'queued' THEN 2 WHEN 'blocked' THEN 3 ELSE 4 END,
@@ -1693,6 +1728,10 @@ function queueDispatchability(task: QueueRow, projects: LocalProject[]): QueueDi
   if (task.status === 'done') return base('done', 'This task is already complete.', 'Review the archived result')
   if (task.status === 'needs-input') return base('needs-input', task.stage || 'This task needs an inbox answer before dispatch.', 'Resolve the inbox item')
   if (task.status === 'blocked') return base('blocked', task.stage || 'This task is blocked.', 'Resume or revise the task')
+  const targetDevice = (task.targetDevice ?? '').trim()
+  if (targetDevice && targetDevice !== getDeviceFilesStatus().currentDevice) {
+    return base('remote-device', `Targeted for device ${targetDevice}; delivery via Dropbox handoff.`, 'Wait for the remote device to pick this up')
+  }
   const attemptMonitor = taskAttemptMonitor(task)
   if (!attemptMonitor.ok) return base('scheduler-waiting', attemptMonitor.reason, 'Wait for the loop monitor cooldown, then retry automatically', false, true)
 
@@ -2061,6 +2100,33 @@ function dispatchQueuedTask(id: string, body: ManualApprovalBody = {}) {
   if (!task) return { ok: false, error: 'task_not_found' }
   if (task.status === 'running') return { ok: false, error: 'task_already_running', task }
   if (task.status === 'done') return { ok: false, error: 'task_already_done', task }
+
+  const requestedTarget = typeof body.targetDevice === 'string' ? body.targetDevice.trim() : ''
+  const selfDevice = getDeviceFilesStatus().currentDevice
+  if (requestedTarget && requestedTarget !== selfDevice) {
+    const devices = listDevices()
+    const known = devices.find((entry) => entry.deviceId === requestedTarget)
+    if (!known) {
+      return { ok: false, error: `unknown_target_device:${requestedTarget}` }
+    }
+    const handoff = produceDispatchHandoff(db, {
+      id: task.id,
+      projectId: task.project,
+      title: task.title,
+      model: task.model,
+      agent: task.agent,
+      priority: task.priority,
+      lane: task.lane,
+      prompt: task.prompt,
+    }, requestedTarget)
+    return {
+      ok: handoff.ok,
+      handoff,
+      remoteDevice: requestedTarget,
+      remoteOnline: known.online,
+      queueTask: queueTaskById(id),
+    }
+  }
 
   const projects = currentProjects()
   const decorated = decorateQueueTask(task, projects)

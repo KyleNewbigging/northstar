@@ -198,6 +198,16 @@ export type BridgeRunTaskResult = {
   task?: BridgeTask
   queueTask?: BridgeTask
   run?: BridgeRun & { attachCommand?: string | null }
+  handoff?: {
+    ok: boolean
+    artifactRelPath?: string
+    targetDevice?: string
+    sourceDevice?: string
+    taskId?: string
+    error?: string
+  }
+  remoteDevice?: string
+  remoteOnline?: boolean
 }
 
 export type BridgeResolveResult = {
@@ -234,7 +244,7 @@ export type TelegramBridgeOptions = {
   getSnapshot: () => BridgeSnapshot
   getOperationsOverview?: () => BridgeOperationsOverview
   getQueueTask?: (id: string) => BridgeTaskDetail
-  runQueueTask?: (id: string) => BridgeRunTaskResult
+  runQueueTask?: (id: string, options?: { targetDevice?: string }) => BridgeRunTaskResult
   listQueueTasks?: () => BridgeTask[]
   pauseQueueTask?: (id: string) => BridgeQueueMutation
   requeueQueueTask?: (id: string) => BridgeQueueMutation

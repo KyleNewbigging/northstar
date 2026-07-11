@@ -234,6 +234,19 @@ export function buildTaskDetailMessage(detail: BridgeTaskDetail) {
 }
 
 export function buildRunTaskResultMessage(taskId: string, result: BridgeRunTaskResult) {
+  if (result.handoff && result.remoteDevice) {
+    if (result.handoff.ok) {
+      return [
+        `Northstar handed off ${taskId} to ${result.remoteDevice}`,
+        `Artifact: ${result.handoff.artifactRelPath ?? 'written'}`,
+        result.remoteOnline === false ? 'Remote device is offline; Dropbox will deliver when it returns.' : 'Remote device will pick it up on its next handoff poll.',
+      ].filter((line): line is string => line !== null).join('\n')
+    }
+    return [
+      `Northstar could not hand off ${taskId} to ${result.remoteDevice}`,
+      result.handoff.error ?? result.error ?? 'Handoff failed.',
+    ].filter((line): line is string => line !== null).join('\n')
+  }
   if (!result.ok) {
     return [
       `Northstar did not start ${taskId}`,
@@ -767,7 +780,7 @@ export function helpText() {
     '/task TASK_ID - task detail and dispatchability',
     '/run TASK_ID - start a safe review-gated local worktree run',
     '/queue [lane] [status] - list queue tasks (lanes: dev|personal|telegram-intent · statuses: blocked|queued|running|needs-input|stale)',
-    '/dispatch TASK_ID - manual-approval dispatch, same guardrails as the cockpit',
+    '/dispatch TASK_ID [@device] - manual-approval dispatch; add @device to hand off via Dropbox',
     '/pause TASK_ID - move a queued/blocked task to paused manually',
     '/requeue TASK_ID - reset a blocked/needs-input task back to queued',
     '/heartbeat - live remote-control cockpit heartbeat',

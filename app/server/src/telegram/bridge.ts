@@ -115,6 +115,7 @@ import {
   isDebugEnabled,
   isObject,
   parseCommandArgs,
+  parseDispatchCommand,
   parsePayloadRuns,
   parsePayloadTasks,
   parseResolveCallback,
@@ -772,17 +773,20 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
     if (command === '/dispatch') {
       const raw = commandRest(text).trim()
       if (!raw) {
-        await sendMessage(token, settings.chatId, 'Usage: /dispatch TASK_ID')
+        await sendMessage(token, settings.chatId, 'Usage: /dispatch TASK_ID [@device]')
         return
       }
+      const parsed = parseDispatchCommand(raw)
       const tasks = options.listQueueTasks?.() ?? options.getSnapshot().tasks
-      const match = matchTaskIdCandidates(tasks, raw)
+      const match = matchTaskIdCandidates(tasks, parsed.taskId)
       if (!match.exact) {
-        await sendMessage(token, settings.chatId, buildTaskIdNotFoundMessage('dispatch', raw, match.candidates))
+        await sendMessage(token, settings.chatId, buildTaskIdNotFoundMessage('dispatch', parsed.taskId, match.candidates))
         return
       }
-      const result = options.runQueueTask?.(match.exact.id ?? raw) ?? { ok: false, error: 'telegram_run_not_wired' }
-      await sendMessage(token, settings.chatId, buildRunTaskResultMessage(match.exact.id ?? raw, result))
+      const resolvedId = match.exact.id ?? parsed.taskId
+      const runOptions = parsed.targetDevice ? { targetDevice: parsed.targetDevice } : undefined
+      const result = options.runQueueTask?.(resolvedId, runOptions) ?? { ok: false, error: 'telegram_run_not_wired' }
+      await sendMessage(token, settings.chatId, buildRunTaskResultMessage(resolvedId, result))
       return
     }
     if (command === '/pause' || command === '/requeue') {

@@ -194,6 +194,7 @@ export function runMigrations(database: DatabaseSync) {
   ensureColumn(database, 'tasks', 'dispatch_status', "ALTER TABLE tasks ADD COLUMN dispatch_status TEXT NOT NULL DEFAULT 'unknown'")
   ensureColumn(database, 'tasks', 'dispatch_blocker', "ALTER TABLE tasks ADD COLUMN dispatch_blocker TEXT NOT NULL DEFAULT ''")
   ensureColumn(database, 'tasks', 'lane', "ALTER TABLE tasks ADD COLUMN lane TEXT NOT NULL DEFAULT 'dev'")
+  ensureColumn(database, 'tasks', 'target_device', "ALTER TABLE tasks ADD COLUMN target_device TEXT NOT NULL DEFAULT ''")
   backfillTaskLanes(database)
   ensureColumn(database, 'telegram_bridge_settings', 'notify_important', 'ALTER TABLE telegram_bridge_settings ADD COLUMN notify_important INTEGER NOT NULL DEFAULT 1')
   ensureColumn(database, 'telegram_bridge_settings', 'notify_lifecycle_debug', 'ALTER TABLE telegram_bridge_settings ADD COLUMN notify_lifecycle_debug INTEGER NOT NULL DEFAULT 0')
