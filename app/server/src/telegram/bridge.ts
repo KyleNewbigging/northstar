@@ -10,6 +10,7 @@ import { Bot } from 'grammy'
 import { run, sequentialize } from '@grammyjs/runner'
 
 import type { DeviceFileActions } from '../deviceFiles.js'
+import { listDevices } from '../deviceRegistry.js'
 import type { HeartbeatWriteResult } from '../heartbeat.js'
 import { telegramBotTokenPath } from '../paths.js'
 import { isWhisperAvailable, transcribeWithWhisper } from '../transcribe.js'
@@ -53,6 +54,7 @@ import {
 import {
   buildContentSearchMessage,
   buildDebugModeMessage,
+  buildDevicesMessage,
   buildFileErrorMessage,
   buildFileListMessage,
   buildFilePreviewMessage,
@@ -871,6 +873,10 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
     }
     if (command === '/sessions') {
       await sendMessage(token, settings.chatId, buildSessionsMessage(listTelegramSessions(db)))
+      return
+    }
+    if (command === '/devices') {
+      await sendMessage(token, settings.chatId, buildDevicesMessage(listDevices()))
       return
     }
     if (command === '/resource') {

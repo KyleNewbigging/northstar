@@ -102,20 +102,32 @@ export function startHeartbeat(options: {
   snapshot: () => HeartbeatSnapshot
   logger: HeartbeatLogger
   intervalMs?: number
+  onCycle?: () => void
 }): HeartbeatRuntime {
+  const runCycleHook = () => {
+    if (!options.onCycle) return
+    try {
+      options.onCycle()
+    } catch (error) {
+      options.logger.warn({ error: errorMessage(error) }, 'heartbeat cycle hook failed')
+    }
+  }
   let last = writeHeartbeat(options.snapshot())
+  runCycleHook()
   const interval = setInterval(() => {
     try {
       last = writeHeartbeat(options.snapshot())
     } catch (error) {
       options.logger.warn({ error: errorMessage(error) }, 'heartbeat write failed')
     }
+    runCycleHook()
   }, Math.max(5000, options.intervalMs ?? configuredHeartbeatIntervalMs()))
   interval.unref?.()
 
   return {
     writeNow: () => {
       last = writeHeartbeat(options.snapshot())
+      runCycleHook()
       return last
     },
     read: () => {

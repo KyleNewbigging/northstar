@@ -8,6 +8,7 @@ import { deliverInboxResolution } from './inboxInject.js'
 import { expireStaleItems } from './expiry.js'
 import { getDb } from './database.js'
 import { createDeviceFileActions } from './deviceFiles.js'
+import { listDevices, writeDeviceHeartbeat } from './deviceRegistry.js'
 import { inferTaskLane, type TaskLane } from './lanes.js'
 import { ensureProjectGraph, ensureProjectGraphs, readGraphifyGraph } from './graphify.js'
 import { githubCatalogPath, loadGithubCatalog } from './github.js'
@@ -68,6 +69,12 @@ const heartbeat = startHeartbeat({
       deviceFiles: deviceFiles.status(),
       telegram: telegramStatusForHeartbeat?.() ?? null,
       nextAction: overview.nextAction,
+    }
+  },
+  onCycle: () => {
+    const result = writeDeviceHeartbeat(db)
+    if (!result.ok && result.code === 'write_failed') {
+      fastify.log.warn({ error: result.error }, 'device registry heartbeat write failed')
     }
   },
 })
@@ -1111,6 +1118,7 @@ function deriveIntakeText(input: { directText: string; docBody?: TelegramIntakeD
   return { ok: true as const, value: probe.prompt }
 }
 fastify.get('/api/heartbeat', async () => heartbeat.writeNow())
+fastify.get('/api/devices', async () => ({ ok: true, devices: listDevices() }))
 fastify.get('/api/device-files/status', async () => deviceFiles.status())
 fastify.get('/api/device-files/list', async (request) => {
   const query = request.query as { path?: string; limit?: string; includeHidden?: string }

@@ -1,6 +1,7 @@
 import type { DatabaseSync } from 'node:sqlite'
 
 import type { ContentMatch, DeviceFileActions, DeviceFileContentSearchResult, DeviceFileEntry, DeviceFileListResult, DeviceFilePreviewResult, DeviceFileSearchResult, DeviceFilesStatus, DeviceHandoffListResult, DeviceHandoffResult, ProjectResourceResult, ProjectWorkspaceResult } from '../deviceFiles.js'
+import type { DeviceRegistryEntry } from '../deviceRegistry.js'
 import type { HeartbeatWriteResult } from '../heartbeat.js'
 import { defaultTelegramAgent, defaultTelegramModel } from './constants.js'
 import { formatSessionRouteSummary, inferTelegramLane, maybeLaneMismatchWarning } from './naturalLanguage.js'
@@ -261,6 +262,49 @@ export function buildRunMessage(run: Required<Pick<BridgeRun, 'id' | 'status'>> 
   if (run.model) lines.push(`Model: ${run.model}`)
   if (run.finalText) lines.push('', clip(run.finalText, 1400))
   return lines.join('\n')
+}
+
+export function buildDevicesMessage(devices: DeviceRegistryEntry[], options: { now?: number } = {}) {
+  if (!devices.length) return 'Northstar devices\nNo devices have advertised via Dropbox yet.'
+  const now = options.now ?? Date.now()
+  const lines = ['Northstar devices']
+  for (const device of devices) {
+    lines.push(formatDeviceLine(device, now))
+  }
+  return lines.join('\n')
+}
+
+function formatDeviceLine(device: DeviceRegistryEntry, now: number): string {
+  const parts: string[] = []
+  parts.push(device.deviceId)
+  parts.push(device.self ? 'self' : device.online ? 'online' : 'offline')
+  if (!device.self) {
+    const age = formatDeviceAge(device.updatedAt, now)
+    if (age) parts.push(`last seen ${age}`)
+  }
+  if (device.platform) parts.push(device.platform)
+  const caps: string[] = []
+  if (device.capabilities.tmux) caps.push('tmux')
+  if (device.capabilities.ripgrep) caps.push('rg')
+  if (device.capabilities.whisper) caps.push('whisper')
+  if (device.capabilities.models.length) caps.push(`models=${device.capabilities.models.join('/')}`)
+  if (device.capabilities.maxParallelRuns > 0) caps.push(`slots=${device.capabilities.maxParallelRuns}`)
+  if (caps.length) parts.push(caps.join(' '))
+  return `- ${parts.join(' · ')}`
+}
+
+function formatDeviceAge(updatedAt: string, now: number): string {
+  const ms = Date.parse(updatedAt)
+  if (!Number.isFinite(ms)) return ''
+  const diff = Math.max(0, now - ms)
+  const seconds = Math.floor(diff / 1000)
+  if (seconds < 60) return `${seconds}s ago`
+  const minutes = Math.floor(seconds / 60)
+  if (minutes < 60) return `${minutes}m ago`
+  const hours = Math.floor(minutes / 60)
+  if (hours < 24) return `${hours}h ago`
+  const days = Math.floor(hours / 24)
+  return `${days}d ago`
 }
 
 export function buildHeartbeatMessage(result: HeartbeatWriteResult) {
@@ -737,6 +781,7 @@ export function helpText() {
     '/project PROJECT - create/show a Dropbox project workspace',
     '/use PROJECT [model] [agent] - route this chat/topic to a project workspace',
     '/sessions - list registered Telegram session routes',
+    '/devices - list Northstar devices advertising via Dropbox',
     '/resource PROJECT title :: content - save a Markdown resource in Dropbox',
     '/debug on 30m - temporarily enable verbose lifecycle and run telemetry',
     '/debug off - return to quiet important-only notifications',

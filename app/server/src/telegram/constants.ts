@@ -38,6 +38,7 @@ export const telegramCommandNames = [
   '/use',
   '/sessions',
   '/resource',
+  '/devices',
   '/debug',
 ] as const
 
