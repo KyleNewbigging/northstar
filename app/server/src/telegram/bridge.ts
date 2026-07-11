@@ -67,12 +67,17 @@ import {
   buildProjectResourceMessage,
   buildProjectWorkspaceMessage,
   buildPromptIntakeMessage,
+  buildQueueMessage,
+  buildQueueMutationMessage,
   buildResolveResultMessage,
   buildRunTaskResultMessage,
   buildSessionMessage,
   buildSessionsMessage,
   buildStatusMessage,
   buildTaskDetailMessage,
+  buildTaskIdNotFoundMessage,
+  matchTaskIdCandidates,
+  parseQueueCommandArgs,
   disabledFileActions,
   helpText,
   parseResourceCommand,
@@ -753,6 +758,50 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       }
       const result = options.runQueueTask?.(taskId) ?? { ok: false, error: 'telegram_run_not_wired' }
       await sendMessage(token, settings.chatId, buildRunTaskResultMessage(taskId, result))
+      return
+    }
+    if (command === '/queue') {
+      const filters = parseQueueCommandArgs(commandRest(text))
+      const tasks = options.listQueueTasks?.() ?? options.getSnapshot().tasks
+      await sendMessage(token, settings.chatId, buildQueueMessage(tasks, filters))
+      return
+    }
+    if (command === '/dispatch') {
+      const raw = commandRest(text).trim()
+      if (!raw) {
+        await sendMessage(token, settings.chatId, 'Usage: /dispatch TASK_ID')
+        return
+      }
+      const tasks = options.listQueueTasks?.() ?? options.getSnapshot().tasks
+      const match = matchTaskIdCandidates(tasks, raw)
+      if (!match.exact) {
+        await sendMessage(token, settings.chatId, buildTaskIdNotFoundMessage('dispatch', raw, match.candidates))
+        return
+      }
+      const result = options.runQueueTask?.(match.exact.id ?? raw) ?? { ok: false, error: 'telegram_run_not_wired' }
+      await sendMessage(token, settings.chatId, buildRunTaskResultMessage(match.exact.id ?? raw, result))
+      return
+    }
+    if (command === '/pause' || command === '/requeue') {
+      const raw = commandRest(text).trim()
+      const action = command === '/pause' ? 'pause' as const : 'requeue' as const
+      if (!raw) {
+        await sendMessage(token, settings.chatId, `Usage: /${action} TASK_ID`)
+        return
+      }
+      const tasks = options.listQueueTasks?.() ?? options.getSnapshot().tasks
+      const match = matchTaskIdCandidates(tasks, raw)
+      if (!match.exact) {
+        await sendMessage(token, settings.chatId, buildTaskIdNotFoundMessage(action, raw, match.candidates))
+        return
+      }
+      const callback = action === 'pause' ? options.pauseQueueTask : options.requeueQueueTask
+      if (!callback) {
+        await sendMessage(token, settings.chatId, `telegram_${action}_not_wired`)
+        return
+      }
+      const result = callback(match.exact.id ?? raw)
+      await sendMessage(token, settings.chatId, buildQueueMutationMessage(action, result))
       return
     }
     if (command === '/heartbeat') {

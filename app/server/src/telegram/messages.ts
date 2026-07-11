@@ -8,6 +8,7 @@ import { updateTelegramBridgeSettings } from './settings.js'
 import type {
   BridgeInboxAction,
   BridgeOperationsOverview,
+  BridgeQueueMutation,
   BridgeResolveResult,
   BridgeRun,
   BridgeRunTaskResult,
@@ -572,6 +573,134 @@ export function parseUseCommand(input: string) {
   }
 }
 
+export type QueueLaneFilter = 'dev' | 'personal' | 'telegram-intent'
+export type QueueStatusFilter = 'blocked' | 'queued' | 'running' | 'needs-input' | 'stale'
+
+export type QueueCommandFilters = {
+  lanes: QueueLaneFilter[]
+  statuses: QueueStatusFilter[]
+  unknown: string[]
+}
+
+const queueLaneTokens: Record<string, QueueLaneFilter> = {
+  dev: 'dev',
+  personal: 'personal',
+  'telegram-intent': 'telegram-intent',
+  telegram: 'telegram-intent',
+}
+
+const queueStatusTokens: Record<string, QueueStatusFilter> = {
+  blocked: 'blocked',
+  queued: 'queued',
+  running: 'running',
+  'needs-input': 'needs-input',
+  needsinput: 'needs-input',
+  input: 'needs-input',
+  stale: 'stale',
+}
+
+export function parseQueueCommandArgs(rest: string): QueueCommandFilters {
+  const args = parseCommandArgs(rest).map((arg) => arg.toLowerCase())
+  const lanes: QueueLaneFilter[] = []
+  const statuses: QueueStatusFilter[] = []
+  const unknown: string[] = []
+  for (const arg of args) {
+    if (queueLaneTokens[arg]) {
+      const lane = queueLaneTokens[arg]
+      if (!lanes.includes(lane)) lanes.push(lane)
+      continue
+    }
+    if (queueStatusTokens[arg]) {
+      const status = queueStatusTokens[arg]
+      if (!statuses.includes(status)) statuses.push(status)
+      continue
+    }
+    unknown.push(arg)
+  }
+  return { lanes, statuses, unknown }
+}
+
+export function filterQueueTasks(tasks: BridgeTask[], filters: QueueCommandFilters) {
+  return tasks.filter((task) => {
+    if (filters.lanes.length && !filters.lanes.includes((task.lane ?? '') as QueueLaneFilter)) return false
+    if (filters.statuses.length) {
+      const matches = filters.statuses.some((status) => {
+        if (status === 'stale') return Boolean(task.dispatchability?.stale)
+        return task.status === status
+      })
+      if (!matches) return false
+    }
+    return true
+  })
+}
+
+export function buildQueueMessage(tasks: BridgeTask[], filters: QueueCommandFilters, maxRows = 15) {
+  const filtered = filterQueueTasks(tasks, filters)
+  const header = 'Northstar queue'
+  const filterLabelParts: string[] = []
+  if (filters.lanes.length) filterLabelParts.push(`lanes: ${filters.lanes.join(', ')}`)
+  if (filters.statuses.length) filterLabelParts.push(`filters: ${filters.statuses.join(', ')}`)
+  const filterLine = filterLabelParts.length ? filterLabelParts.join(' · ') : 'all lanes · all statuses'
+  const unknownLine = filters.unknown.length ? `Ignored: ${filters.unknown.join(', ')}` : null
+  if (!filtered.length) {
+    return [header, filterLine, unknownLine, '', 'No tasks match this filter.'].filter((line): line is string => line !== null && line !== '').join('\n')
+  }
+  const rows = filtered.slice(0, maxRows).map(formatQueueRow)
+  const overflow = filtered.length > maxRows ? `...and ${filtered.length - maxRows} more` : null
+  const lines: (string | null)[] = [header, `${filterLine} · ${filtered.length} match${filtered.length === 1 ? '' : 'es'}`, unknownLine, '', ...rows]
+  if (overflow) lines.push('', overflow)
+  return lines.filter((line): line is string => line !== null).join('\n')
+}
+
+function formatQueueRow(task: BridgeTask) {
+  const id = task.id ?? '?'
+  const title = clip((task.title ?? 'Untitled').replace(/\s+/g, ' '), 60)
+  const status = task.status ?? 'unknown'
+  const lane = task.lane ?? '?'
+  const priority = task.priority ?? 'P?'
+  const staleMark = task.dispatchability?.stale ? ' · stale' : ''
+  const head = `${id} · ${title}`
+  const meta = `${status} · ${lane} · ${priority}${staleMark}`
+  const dispatch = task.status === 'running'
+    ? null
+    : task.dispatchability
+      ? `${task.dispatchability.status ?? 'unknown'}: ${task.dispatchability.reason ?? 'no explanation'}`
+      : null
+  return [head, `  ${meta}`, dispatch ? `  ${clip(dispatch, 200)}` : null].filter((line): line is string => line !== null).join('\n')
+}
+
+export function matchTaskIdCandidates(tasks: BridgeTask[], query: string, max = 5) {
+  const trimmed = query.trim()
+  if (!trimmed) return { exact: null as BridgeTask | null, candidates: [] as BridgeTask[] }
+  const lower = trimmed.toLowerCase()
+  const ids = tasks.filter((task) => typeof task.id === 'string')
+  const exact = ids.find((task) => (task.id ?? '').toLowerCase() === lower) ?? null
+  if (exact) return { exact, candidates: [] }
+  const prefix = ids.filter((task) => (task.id ?? '').toLowerCase().startsWith(lower))
+  const contains = prefix.length ? [] : ids.filter((task) => (task.id ?? '').toLowerCase().includes(lower))
+  const source = prefix.length ? prefix : contains
+  return { exact: null, candidates: source.slice(0, max) }
+}
+
+export function buildTaskIdNotFoundMessage(action: string, query: string, candidates: BridgeTask[]) {
+  const lines = [`Northstar could not match task "${query}" for /${action}.`]
+  if (candidates.length) {
+    lines.push('Candidates:')
+    for (const task of candidates) {
+      lines.push(`  ${task.id} · ${clip((task.title ?? '').replace(/\s+/g, ' '), 60)}`)
+    }
+  } else {
+    lines.push('No candidate ids matched. Use /queue to browse tasks.')
+  }
+  return lines.join('\n')
+}
+
+export function buildQueueMutationMessage(action: 'pause' | 'requeue', result: BridgeQueueMutation) {
+  if (!result.ok) return `Northstar could not ${action} ${result.id}: ${result.error ?? 'unknown error'}`
+  if (action === 'pause') return `Northstar paused ${result.id}. Status: ${result.status ?? 'blocked'}.`
+  return `Northstar requeued ${result.id}. Status: ${result.status ?? 'queued'}.`
+}
+
 export function helpText() {
   return [
     'Northstar Telegram bridge commands:',
@@ -580,6 +709,10 @@ export function helpText() {
     '/next - recommended next action',
     '/task TASK_ID - task detail and dispatchability',
     '/run TASK_ID - start a safe review-gated local worktree run',
+    '/queue [lane] [status] - list queue tasks (lanes: dev|personal|telegram-intent · statuses: blocked|queued|running|needs-input|stale)',
+    '/dispatch TASK_ID - manual-approval dispatch, same guardrails as the cockpit',
+    '/pause TASK_ID - move a queued/blocked task to paused manually',
+    '/requeue TASK_ID - reset a blocked/needs-input task back to queued',
     '/heartbeat - live remote-control cockpit heartbeat',
     '/inbox - open decisions',
     '/resolve ACTION_ID choice - resolve one inbox item',

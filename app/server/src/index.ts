@@ -81,7 +81,14 @@ const telegramBridge = createTelegramBridge(db, {
   }),
   getOperationsOverview: () => buildOperationsOverviewSync(),
   getQueueTask: (id) => queueTaskDetail(id),
-  runQueueTask: (id) => dispatchQueuedTask(id),
+  runQueueTask: (id) => {
+    const result = dispatchQueuedTask(id, { manualApproval: true })
+    broadcastRealtime('queue:updated', { taskId: id, result, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions() })
+    return result
+  },
+  listQueueTasks: () => listQueueTasks(),
+  pauseQueueTask: (id) => pauseQueueTaskForTelegram(id),
+  requeueQueueTask: (id) => requeueQueueTaskForTelegram(id),
   resolveInboxAction: (id, choice) => {
     const result = resolveInboxAction(id, choice)
     if (result.ok) broadcastRealtime('inbox:updated', result)
@@ -1244,18 +1251,52 @@ fastify.post('/api/queue/:id/dispatch', async (request) => {
 })
 fastify.post('/api/queue/:id/pause', async (request) => {
   const { id } = request.params as { id: string }
-  db.prepare("UPDATE tasks SET status = 'blocked', eta = 'paused', stage = 'paused manually', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'running'").run(id)
-  const result = { ok: true, id, status: 'blocked', tasks: listQueueTasks(), runs: listRuns(db) }
+  const result = pauseQueueTaskRoute(id)
   broadcastRealtime('queue:updated', result)
   return result
 })
 fastify.post('/api/queue/:id/resume', async (request) => {
   const { id } = request.params as { id: string }
-  db.prepare("UPDATE tasks SET status = 'queued', eta = 'next window', stage = 'ready for dispatch', updated_at = CURRENT_TIMESTAMP, completed_at = NULL WHERE id = ? AND status != 'running'").run(id)
-  const result = { ok: true, id, status: 'queued', tasks: listQueueTasks(), runs: listRuns(db) }
+  const result = requeueQueueTaskRoute(id)
   broadcastRealtime('queue:updated', result)
   return result
 })
+
+function pauseQueueTaskCore(id: string) {
+  db.prepare("UPDATE tasks SET status = 'blocked', eta = 'paused', stage = 'paused manually', updated_at = CURRENT_TIMESTAMP WHERE id = ? AND status != 'running'").run(id)
+}
+
+function requeueQueueTaskCore(id: string) {
+  db.prepare("UPDATE tasks SET status = 'queued', eta = 'next window', stage = 'ready for dispatch', updated_at = CURRENT_TIMESTAMP, completed_at = NULL WHERE id = ? AND status != 'running'").run(id)
+}
+
+function pauseQueueTaskRoute(id: string) {
+  pauseQueueTaskCore(id)
+  return { ok: true, id, status: 'blocked', tasks: listQueueTasks(), runs: listRuns(db) }
+}
+
+function requeueQueueTaskRoute(id: string) {
+  requeueQueueTaskCore(id)
+  return { ok: true, id, status: 'queued', tasks: listQueueTasks(), runs: listRuns(db) }
+}
+
+function pauseQueueTaskForTelegram(id: string) {
+  const task = queueTaskById(id)
+  if (!task) return { ok: false as const, id, error: 'task_not_found' }
+  if (task.status === 'running') return { ok: false as const, id, error: 'task_running_cannot_pause' }
+  pauseQueueTaskCore(id)
+  broadcastRealtime('queue:updated', { ok: true, id, status: 'blocked', tasks: listQueueTasks(), runs: listRuns(db) })
+  return { ok: true as const, id, status: 'blocked' }
+}
+
+function requeueQueueTaskForTelegram(id: string) {
+  const task = queueTaskById(id)
+  if (!task) return { ok: false as const, id, error: 'task_not_found' }
+  if (task.status === 'running') return { ok: false as const, id, error: 'task_running_cannot_requeue' }
+  requeueQueueTaskCore(id)
+  broadcastRealtime('queue:updated', { ok: true, id, status: 'queued', tasks: listQueueTasks(), runs: listRuns(db) })
+  return { ok: true as const, id, status: 'queued' }
+}
 fastify.post('/api/scheduler/tick', async (request) => {
   const result = await runSchedulerTick((request.body ?? {}) as SchedulerTickBody)
   broadcastRealtime('scheduler:tick', { result, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions(), projects: currentProjects() })

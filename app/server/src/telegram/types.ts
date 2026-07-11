@@ -74,6 +74,16 @@ export type BridgeTask = {
   sourceRef?: string
   priority?: BridgePriority
   lane?: string
+  stage?: string
+  dispatchability?: {
+    status?: string
+    runnable?: boolean
+    canDispatchNow?: boolean
+    reason?: string
+    action?: string
+    stale?: boolean
+    schedulerWaiting?: boolean
+  }
 }
 
 export type BridgeRun = {
@@ -212,12 +222,22 @@ export type TelegramLogger = {
   error?: (...args: any[]) => void
 }
 
+export type BridgeQueueMutation = {
+  ok: boolean
+  id: string
+  status?: string
+  error?: string
+}
+
 export type TelegramBridgeOptions = {
   logger: TelegramLogger
   getSnapshot: () => BridgeSnapshot
   getOperationsOverview?: () => BridgeOperationsOverview
   getQueueTask?: (id: string) => BridgeTaskDetail
   runQueueTask?: (id: string) => BridgeRunTaskResult
+  listQueueTasks?: () => BridgeTask[]
+  pauseQueueTask?: (id: string) => BridgeQueueMutation
+  requeueQueueTask?: (id: string) => BridgeQueueMutation
   resolveInboxAction: (id: string, choice: string) => BridgeResolveResult
   queuePrompt?: (input: TelegramPromptInput) => TelegramPromptResult
   fileActions?: DeviceFileActions

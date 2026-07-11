@@ -1,4 +1,4 @@
-import { Layers, Network, Pause, Play, Terminal, Zap } from 'lucide-react'
+import { Layers, Network, Pause, Play, RotateCcw, Terminal, Zap } from 'lucide-react'
 import { useEffect, useState } from 'react'
 
 import { ModelChip } from '../components/ModelChip'
@@ -118,6 +118,18 @@ export function Queue({ projects, overview, openReview }: { projects: Project[];
     await refresh()
   }
 
+  const requeueTask = async (task: QueueTask) => {
+    setWorking((current) => ({ ...current, [task.id]: true }))
+    const data = await apiSend<{ ok?: boolean; status?: string; error?: string }>(`/api/queue/${task.id}/resume`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: '{}',
+    })
+    setWorking((current) => ({ ...current, [task.id]: false }))
+    setMessage(data?.ok ? `Requeued ${task.id}` : data?.error ?? `Requeue failed for ${task.id}`)
+    await refresh()
+  }
+
   return (
     <div className="screen queue-screen">
       <div className="queue-grid">
@@ -164,6 +176,7 @@ export function Queue({ projects, overview, openReview }: { projects: Project[];
               {visibleTasks.map((q) => {
                 const paused = q.status === 'blocked' && q.stage === 'paused manually'
                 const runnable = q.dispatchability?.canDispatchNow ?? (q.status !== 'running' && q.status !== 'done')
+                const requeueable = q.status !== 'running' && q.status !== 'done' && q.status !== 'queued' && (q.status === 'blocked' || q.status === 'needs-input' || q.dispatchability?.stale)
                 return (
                   <div key={q.id} className={`q-item${q.dispatchability?.stale ? ' stale' : ''}`}>
                     <div className="q-prio" style={{ background: priorityColor[q.priority] }} />
@@ -179,6 +192,7 @@ export function Queue({ projects, overview, openReview }: { projects: Project[];
                         <ModelChip id={q.model} small />
                         <span className="q-tag mono">{q.agent}</span>
                         {q.dispatchability ? <span className={`q-tag mono dispatch-${q.dispatchability.status}`}>{q.dispatchability.status}</span> : null}
+                        {q.dispatchability?.stale ? <span className="q-tag mono dispatch-stale" title="No update in 72h">stale</span> : null}
                         {q.updatedAt ? <span className="q-tag mono">{taskAgeLabel(q.updatedAt)}</span> : null}
                         <span className="grow" />
                         <span className="mono q-stage">{q.stage}</span>
@@ -190,6 +204,7 @@ export function Queue({ projects, overview, openReview }: { projects: Project[];
                       <button className="btn btn-sm" disabled={!runnable || working[q.id]} title={q.dispatchability?.action ?? 'Run'} onClick={() => void runTask(q)}><Play size={12} /> Run</button>
                       <button className="btn btn-sm" onClick={() => openReview(q.id)}>Review</button>
                       <button className="btn btn-sm btn-ghost" disabled={q.status === 'running' || working[q.id]} title={paused ? 'Resume task' : 'Pause task'} onClick={() => void togglePause(q)}>{paused ? <Play size={12} /> : <Pause size={12} />}</button>
+                      {requeueable ? <button className="btn btn-sm btn-ghost" disabled={working[q.id]} title="Requeue task" onClick={() => void requeueTask(q)}><RotateCcw size={12} /></button> : null}
                     </div>
                   </div>
                 )
