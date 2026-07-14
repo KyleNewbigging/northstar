@@ -239,6 +239,26 @@ export type BridgeQueueMutation = {
   error?: string
 }
 
+export type BridgeAgentRecord = {
+  id: string
+  name: string
+  domain: string
+  charter: string
+  contract: string
+  defaultModel: string
+  projectId: string
+  active: boolean
+}
+
+export type BridgeAuditEntry = {
+  id: number
+  at: string
+  actor: string
+  action: string
+  subject: string
+  detail: string
+}
+
 export type TelegramBridgeOptions = {
   logger: TelegramLogger
   getSnapshot: () => BridgeSnapshot
@@ -248,10 +268,13 @@ export type TelegramBridgeOptions = {
   listQueueTasks?: () => BridgeTask[]
   pauseQueueTask?: (id: string) => BridgeQueueMutation
   requeueQueueTask?: (id: string) => BridgeQueueMutation
-  resolveInboxAction: (id: string, choice: string) => BridgeResolveResult
+  resolveInboxAction: (id: string, choice: string, actor?: 'operator:telegram' | 'operator:web') => BridgeResolveResult
   queuePrompt?: (input: TelegramPromptInput) => TelegramPromptResult
   fileActions?: DeviceFileActions
   getHeartbeat?: () => HeartbeatWriteResult
+  listAgents?: () => BridgeAgentRecord[]
+  getAgent?: (id: string) => BridgeAgentRecord | null
+  listAudit?: (limit: number) => BridgeAuditEntry[]
 }
 
 export type TelegramBridgeMode = 'poll' | 'grammy'

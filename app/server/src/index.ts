@@ -3,7 +3,9 @@ import websocket from '@fastify/websocket'
 import Fastify from 'fastify'
 
 import { buildAgentGraph, type AgentGraphRun } from './agentGraph.js'
+import { getAgent as getAgentRecord, listAgents as listAgentsRecords, setAgentActive, upsertAgent, type AgentRecord } from './agentRegistry.js'
 import { approvePatch, cancelRun, dispatchAgent, getPatch, getRun, isTmuxSessionAlive, listRuns, reconcileStaleRuns, refreshPatchArtifact, resolveTmuxExecutable, resumeAgentInWorktree, sendTmuxText, tmuxReconcileIntervalMs, type DispatchModel, type DispatchRequest, type TaskPriority } from './agentRunner.js'
+import { listAudit, recordAudit } from './auditLog.js'
 import { deliverInboxResolution } from './inboxInject.js'
 import { expireStaleItems } from './expiry.js'
 import { getDb } from './database.js'
@@ -90,15 +92,15 @@ const telegramBridge = createTelegramBridge(db, {
   getOperationsOverview: () => buildOperationsOverviewSync(),
   getQueueTask: (id) => queueTaskDetail(id),
   runQueueTask: (id, opts) => {
-    const result = dispatchQueuedTask(id, { manualApproval: true, targetDevice: opts?.targetDevice })
+    const result = dispatchQueuedTask(id, { manualApproval: true, targetDevice: opts?.targetDevice }, 'operator:telegram')
     broadcastRealtime('queue:updated', { taskId: id, result, tasks: listQueueTasks(), runs: listRuns(db), actions: listInboxActions() })
     return result
   },
   listQueueTasks: () => listQueueTasks(),
   pauseQueueTask: (id) => pauseQueueTaskForTelegram(id),
   requeueQueueTask: (id) => requeueQueueTaskForTelegram(id),
-  resolveInboxAction: (id, choice) => {
-    const result = resolveInboxAction(id, choice)
+  resolveInboxAction: (id, choice, actor) => {
+    const result = resolveInboxAction(id, choice, actor ?? 'operator:telegram')
     if (result.ok) broadcastRealtime('inbox:updated', result)
     return result
   },
@@ -109,6 +111,19 @@ const telegramBridge = createTelegramBridge(db, {
   },
   fileActions: deviceFiles,
   getHeartbeat: () => heartbeat.writeNow(),
+  listAgents: () => listAgentsRecords(db).map(toBridgeAgent),
+  getAgent: (id: string) => {
+    const agent = getAgentRecord(db, id)
+    return agent ? toBridgeAgent(agent) : null
+  },
+  listAudit: (limit: number) => listAudit(db, { limit }).map((entry) => ({
+    id: entry.id,
+    at: entry.at,
+    actor: entry.actor,
+    action: entry.action,
+    subject: entry.subject,
+    detail: entry.detail,
+  })),
 })
 telegramStatusForHeartbeat = () => {
   const status = telegramBridge.status()
@@ -686,7 +701,7 @@ function listInboxActions() {
   }))
 }
 
-function resolveInboxAction(id: string, rawChoice: string) {
+function resolveInboxAction(id: string, rawChoice: string, actor: 'operator:web' | 'operator:telegram' = 'operator:web') {
   const row = db
     .prepare('SELECT id, task_id, options_json, resolved_at FROM inbox_actions WHERE id = ?')
     .get(id) as { id: string; task_id?: string | null; options_json?: string | null; resolved_at?: string | null } | undefined
@@ -704,6 +719,13 @@ function resolveInboxAction(id: string, rawChoice: string) {
     },
     isAlive: isTmuxSessionAlive,
     sendText: sendTmuxText,
+  })
+  recordAudit(db, {
+    actor,
+    action: 'resolve',
+    subject: id,
+    detail: `choice=${choice}${taskResolution?.taskId ? ` task=${taskResolution.taskId}` : ''}`,
+    meta: { choice, taskResolution, delivery: injection.delivery, deliveryRunId: injection.runId, deliveryTaskId: injection.taskId },
   })
   return { ok: true, id, choice, taskResolution, delivery: injection.delivery, deliveryDetail: injection.detail, deliveryRunId: injection.runId, deliveryTaskId: injection.taskId, actions: listInboxActions(), tasks: listQueueTasks(), runs: listRuns(db) }
 }
@@ -1273,7 +1295,7 @@ fastify.post('/api/projects/:id/skills/learn', async (request) => {
 fastify.post('/api/inbox/:id/resolve', async (request) => {
   const { id } = request.params as { id: string }
   const body = request.body as { choice?: string }
-  const result = resolveInboxAction(id, body.choice ?? '')
+  const result = resolveInboxAction(id, body.choice ?? '', 'operator:web')
   broadcastRealtime('inbox:updated', result)
   return result
 })
@@ -2095,9 +2117,12 @@ function runnableProject(projects: LocalProject[], projectId: string) {
   return { ok: true as const, project }
 }
 
-function dispatchQueuedTask(id: string, body: ManualApprovalBody = {}) {
+function dispatchQueuedTask(id: string, body: ManualApprovalBody = {}, actor: 'operator:web' | 'operator:telegram' | 'system:scheduler' = 'operator:web') {
   const task = queueTaskById(id)
-  if (!task) return { ok: false, error: 'task_not_found' }
+  if (!task) {
+    recordAudit(db, { actor, action: 'dispatch', subject: id, detail: 'task_not_found' })
+    return { ok: false, error: 'task_not_found' }
+  }
   if (task.status === 'running') return { ok: false, error: 'task_already_running', task }
   if (task.status === 'done') return { ok: false, error: 'task_already_done', task }
 
@@ -2119,6 +2144,13 @@ function dispatchQueuedTask(id: string, body: ManualApprovalBody = {}) {
       lane: task.lane,
       prompt: task.prompt,
     }, requestedTarget)
+    recordAudit(db, {
+      actor,
+      action: 'handoff-produce',
+      subject: task.id,
+      detail: `target=${requestedTarget} ${handoff.ok ? 'ok' : `error=${handoff.ok === false ? handoff.error : 'unknown'}`}`,
+      meta: { targetDevice: requestedTarget, ok: handoff.ok, artifactRelPath: handoff.ok ? handoff.artifactRelPath : undefined },
+    })
     return {
       ok: handoff.ok,
       handoff,

@@ -1,5 +1,7 @@
 import { DatabaseSync } from 'node:sqlite'
 
+import { seedAgentRegistry } from './agentRegistry.js'
+import { pruneAudit } from './auditLog.js'
 import { databasePath, ensureRuntimeDirs } from './paths.js'
 import { seedSchedulerSettings } from './scheduler.js'
 import { schemaSql } from './schema.js'
@@ -18,6 +20,8 @@ export function getDb() {
     seedNorthstarWorkflow(db)
     seedSchedulerSettings(db)
     seedTelegramBridgeSettings(db)
+    seedAgentRegistry(db)
+    pruneAudit(db)
   }
   return db
 }

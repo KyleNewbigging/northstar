@@ -7,6 +7,8 @@ import { defaultTelegramAgent, defaultTelegramModel } from './constants.js'
 import { formatSessionRouteSummary, inferTelegramLane, maybeLaneMismatchWarning } from './naturalLanguage.js'
 import { updateTelegramBridgeSettings } from './settings.js'
 import type {
+  BridgeAgentRecord,
+  BridgeAuditEntry,
   BridgeInboxAction,
   BridgeOperationsOverview,
   BridgeQueueMutation,
@@ -771,6 +773,55 @@ export function buildQueueMutationMessage(action: 'pause' | 'requeue', result: B
   return `Northstar requeued ${result.id}. Status: ${result.status ?? 'queued'}.`
 }
 
+export function buildAgentsListMessage(agents: BridgeAgentRecord[]): string {
+  if (!agents.length) return 'Northstar agents\nNo agents registered yet.'
+  const lines = ['Northstar agents']
+  for (const agent of agents) {
+    const scope = agent.projectId ? `project:${agent.projectId}` : 'global'
+    const state = agent.active ? 'active' : 'inactive'
+    lines.push(`- ${agent.id} · ${agent.name}`)
+    lines.push(`    ${agent.domain || 'general'} · ${agent.defaultModel} · ${state} · ${scope}`)
+  }
+  lines.push('', 'Use /agents <id> for charter + contract.')
+  return lines.join('\n')
+}
+
+export function buildAgentDetailMessage(agent: BridgeAgentRecord | null, id: string): string {
+  if (!agent) return `No agent registered as ${id}. Use /agents to list them.`
+  const scope = agent.projectId ? `project:${agent.projectId}` : 'global'
+  const state = agent.active ? 'active' : 'inactive'
+  return [
+    `Agent ${agent.id}: ${agent.name}`,
+    `${agent.domain || 'general'} · ${agent.defaultModel} · ${state} · ${scope}`,
+    '',
+    'Charter:',
+    agent.charter || '(none set)',
+    '',
+    'Contract:',
+    agent.contract || '(none set)',
+  ].join('\n')
+}
+
+export function buildAuditMessage(entries: BridgeAuditEntry[], limit: number): string {
+  if (!entries.length) return 'Northstar audit\nNo audit entries yet.'
+  const lines = [`Northstar audit (last ${Math.min(entries.length, limit)})`]
+  for (const entry of entries) {
+    const when = compactAuditTime(entry.at)
+    const subject = entry.subject ? ` ${entry.subject}` : ''
+    const detail = entry.detail ? ` — ${clip(entry.detail.replace(/\s+/g, ' '), 120)}` : ''
+    lines.push(`${when} ${entry.actor} ${entry.action}${subject}${detail}`)
+  }
+  return lines.join('\n')
+}
+
+function compactAuditTime(at: string): string {
+  const time = Date.parse(at)
+  if (!Number.isFinite(time)) return at.slice(0, 19)
+  const date = new Date(time)
+  const pad = (value: number) => value.toString().padStart(2, '0')
+  return `${date.getUTCFullYear()}-${pad(date.getUTCMonth() + 1)}-${pad(date.getUTCDate())}T${pad(date.getUTCHours())}:${pad(date.getUTCMinutes())}Z`
+}
+
 export function helpText() {
   return [
     'Northstar Telegram bridge commands:',
@@ -795,6 +846,8 @@ export function helpText() {
     '/use PROJECT [model] [agent] - route this chat/topic to a project workspace',
     '/sessions - list registered Telegram session routes',
     '/devices - list Northstar devices advertising via Dropbox',
+    '/agents [id] - list registered agents or show one agent charter + contract',
+    '/audit [n] - last n audit-log entries (default 10, max 200)',
     '/resource PROJECT title :: content - save a Markdown resource in Dropbox',
     '/debug on 30m - temporarily enable verbose lifecycle and run telemetry',
     '/debug off - return to quiet important-only notifications',

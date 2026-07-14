@@ -275,4 +275,34 @@ CREATE TABLE IF NOT EXISTS device_file_events (
   detail_json TEXT NOT NULL,
   created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS agents (
+  id TEXT PRIMARY KEY,
+  name TEXT NOT NULL,
+  domain TEXT NOT NULL DEFAULT '',
+  charter TEXT NOT NULL DEFAULT '',
+  contract TEXT NOT NULL DEFAULT '',
+  default_model TEXT NOT NULL DEFAULT 'spark',
+  project_id TEXT NOT NULL DEFAULT '',
+  active INTEGER NOT NULL DEFAULT 1,
+  created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_agents_domain ON agents (domain);
+CREATE INDEX IF NOT EXISTS idx_agents_project ON agents (project_id);
+
+CREATE TABLE IF NOT EXISTS audit_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  actor TEXT NOT NULL,
+  action TEXT NOT NULL,
+  subject TEXT,
+  detail TEXT,
+  meta_json TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_audit_log_at ON audit_log (at DESC);
+CREATE INDEX IF NOT EXISTS idx_audit_log_action ON audit_log (action);
+CREATE INDEX IF NOT EXISTS idx_audit_log_subject ON audit_log (subject);
 `

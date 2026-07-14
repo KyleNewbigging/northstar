@@ -52,6 +52,9 @@ import {
   queueDigest,
 } from './lifecycle.js'
 import {
+  buildAgentDetailMessage,
+  buildAgentsListMessage,
+  buildAuditMessage,
   buildContentSearchMessage,
   buildDebugModeMessage,
   buildDevicesMessage,
@@ -883,6 +886,25 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       await sendMessage(token, settings.chatId, buildDevicesMessage(listDevices()))
       return
     }
+    if (command === '/agents') {
+      const arg = commandRest(text).trim()
+      if (arg) {
+        const agent = options.getAgent?.(arg) ?? null
+        await sendMessage(token, settings.chatId, buildAgentDetailMessage(agent, arg))
+        return
+      }
+      const agents = options.listAgents?.() ?? []
+      await sendMessage(token, settings.chatId, buildAgentsListMessage(agents))
+      return
+    }
+    if (command === '/audit') {
+      const arg = commandRest(text).trim()
+      const parsed = Number(arg)
+      const limit = Number.isFinite(parsed) && parsed > 0 ? Math.min(200, Math.floor(parsed)) : 10
+      const entries = options.listAudit?.(limit) ?? []
+      await sendMessage(token, settings.chatId, buildAuditMessage(entries, limit))
+      return
+    }
     if (command === '/resource') {
       const parsed = parseResourceCommand(commandRest(text))
       await sendMessage(token, settings.chatId, buildProjectResourceMessage(requireFileActions().saveProjectResource(parsed)))
@@ -894,7 +916,7 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
         await sendMessage(token, settings.chatId, result.error)
         return
       }
-      const resolved = options.resolveInboxAction(result.id, result.choice)
+      const resolved = options.resolveInboxAction(result.id, result.choice, 'operator:telegram')
       await sendMessage(token, settings.chatId, buildResolveResultMessage(resolved))
       return
     }
@@ -947,7 +969,7 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       return
     }
 
-    const resolved = options.resolveInboxAction(parsed.id, parsed.choice)
+    const resolved = options.resolveInboxAction(parsed.id, parsed.choice, 'operator:telegram')
     await answerCallbackQuery(token, callback.id, resolved.ok ? 'Northstar Inbox resolved.' : 'Northstar could not resolve that item.')
     await sendMessage(token, settings.chatId, buildResolveResultMessage(resolved))
   }
@@ -961,7 +983,7 @@ export function createTelegramBridge(db: DatabaseSync, options: TelegramBridgeOp
       return true
     }
 
-    const resolved = options.resolveInboxAction(resolution.action.id, resolution.choice)
+    const resolved = options.resolveInboxAction(resolution.action.id, resolution.choice, 'operator:telegram')
     await sendMessage(token, settings.chatId, buildNaturalResolveResultMessage(resolution.action, resolution.choiceLabel, resolved))
     return true
   }
